@@ -1,0 +1,21 @@
+{
+  "name": "mi-bot-wsp",
+  "version": "1.0.0",
+  "description": "Bot de WhatsApp con IA para responder consultas y gestionar cursos Q10",
+  "main": "bot.js",
+  "type": "module",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "better-sqlite3": "^12.2.0",
+    "dotenv": "^17.2.1",
+    "node-cron": "^4.2.1",
+    "openai": "^5.11.0",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.31.0",
+    "xlsx": "^0.18.5"
+  }
+}
