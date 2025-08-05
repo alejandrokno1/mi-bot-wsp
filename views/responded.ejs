@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Chats Respondidos</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <h1>Chats Respondidos ✅</h1>
+  <p><a href="/">← Volver al menú</a></p>
+
+  <% if (chats.length === 0) { %>
+    <p>Aún no hay respuestas registradas.</p>
+  <% } else { %>
+    <table border="1" cellpadding="8">
+      <thead>
+        <tr>
+          <th>chat_id</th>
+          <th>Última respuesta</th>
+        </tr>
+      </thead>
+      <tbody id="responded-body">
+        <% chats.forEach(c => { %>
+          <tr>
+            <td><%= c.chat_id %></td>
+            <td><%= new Date(c.last_response).toLocaleString('es-CO') %></td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  <% } %>
+
+  <script>
+    // Polling cada 10s para refrescar la tabla
+    async function refreshResponded() {
+      const res = await fetch('/responded-data');
+      if (!res.ok) return;
+      const chats = await res.json();
+      const tbody = document.getElementById('responded-body');
+      tbody.innerHTML = chats.map(c => `
+        <tr>
+          <td>${c.chat_id}</td>
+          <td>${new Date(c.last_response).toLocaleString('es-CO')}</td>
+        </tr>
+      `).join('');
+    }
+
+    refreshResponded();
+    setInterval(refreshResponded, 10_000);
+  </script>
+</body>
+</html>

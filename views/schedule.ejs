@@ -1,0 +1,47 @@
+<!-- views/schedule.ejs -->
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Horario de Clases</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <h1>Horario de Clases</h1>
+  <p><a href="/">← Volver al menú</a></p>
+  <form action="/reload-schedule" method="post">
+    <button type="submit">🔄 Recargar Horario</button>
+  </form>
+
+  <% /* Recorremos cada grupo (A y B) */ %>
+  <% Object.entries(scheduleMap).forEach(([sheetName, dayMap]) => { %>
+    <section>
+      <h2>Grupo <%= sheetName %></h2>
+
+      <% if (!Object.keys(dayMap).length) { %>
+        <p>No hay datos disponibles para este grupo.</p>
+      <% } else { %>
+        <% Object.entries(dayMap).forEach(([dayKey, slots]) => { %>
+          <article>
+            <h3><%= dayKey.charAt(0).toUpperCase() + dayKey.slice(1) %></h3>
+            <table border="1" cellpadding="6">
+              <thead>
+                <tr><th>Horario</th><th>Materia</th></tr>
+              </thead>
+              <tbody>
+              <% Object.entries(slots).forEach(([slot, subj]) => { %>
+                <tr>
+                  <td><%= slot %></td>
+                  <td><%= subj || '—' %></td>
+                </tr>
+              <% }) %>
+              </tbody>
+            </table>
+          </article>
+        <% }) %>
+      <% } %>
+    </section>
+    <hr/>
+  <% }) %>
+</body>
+</html>

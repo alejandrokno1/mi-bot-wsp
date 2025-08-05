@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <!-- … tu HEAD … -->
+</head>
+<body>
+  <h1>Chats Pausados 🤖⏸️</h1>
+  <p><a href="/">← Volver al menú</a></p>
+  <table border="1" cellpadding="8">
+    <thead>
+      <tr><th>chat_id</th></tr>
+    </thead>
+    <tbody id="paused-body">
+      <% chats.forEach(c => { %>
+        <tr><td><%= c.chat_id %></td></tr>
+      <% }) %>
+    </tbody>
+  </table>
+
+  <!-- Aquí inyectamos el script de polling -->
+  <script>
+    async function refreshPaused() {
+      const res = await fetch('/paused-data');
+      if (!res.ok) return;
+      const chats = await res.json();
+      const tbody = document.getElementById('paused-body');
+      tbody.innerHTML = chats
+        .map(c => `<tr><td>${c.chat_id}</td></tr>`)
+        .join('');
+    }
+
+    // Primera carga y luego cada 10 s
+    refreshPaused();
+    setInterval(refreshPaused, 10_000);
+  </script>
+</body>
+</html>

@@ -1,102 +1,122 @@
 // schedule.js
-// Módulo mejorado: carga el Excel de horarios y programa recordatorios semanales con saludo dinámico
-
 import XLSX from 'xlsx';
 import path from 'path';
 import cron from 'node-cron';
 
-// Ruta al Excel (datos.xlsx en la carpeta raíz del proyecto)
-const excelPath = path.join(process.cwd(), 'datos.xlsx');
 
-let scheduleMap = {};
+const EXCEL_PATH = path.join(process.cwd(), 'datos.xlsx');
+
+// scheduleMap tendrá: { A: { '11 de agosto': { '6:00 a 8:00':'Lectura', ... }, ... }, B: {...} }
+export let scheduleMap = {};
 
 /** Normaliza texto: quita acentos, pasa a minúsculas y trim */
 function normalize(text) {
-  return text
-    .toString()
+  return String(text)
     .toLowerCase()
     .normalize('NFD')
     .replace(/\p{Diacritic}/gu, '')
     .trim();
 }
 
-/** Carga y parsea datos.xlsx para poblar scheduleMap */
-function loadSchedule() {
-  const workbook = XLSX.readFile(excelPath);
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
-
-  // Identifica fila de encabezado y columna "Hora"
-  const headerIndex = matrix.findIndex(row => row.some(cell => normalize(cell) === 'hora'));
-  if (headerIndex === -1) {
-    console.error('❌ [Scheduler] No se encontró encabezado "Hora"');
-    return;
-  }
-  const header = matrix[headerIndex];
-  const horaCol = header.findIndex(cell => normalize(cell) === 'hora');
-
-  // Días: celdas no vacías a la derecha de "Hora"
-  const days = header.slice(horaCol + 1).map(normalize).filter(d => d);
-  const dataRows = matrix.slice(headerIndex + 1);
-
+/** Carga TODO el Excel en scheduleMap */
+export function loadSchedule() {
+  const wb = XLSX.readFile(EXCEL_PATH);
   scheduleMap = {};
-  days.forEach((day, di) => {
-    scheduleMap[day] = {};
-    dataRows.forEach(row => {
-      const slot = row[horaCol]?.toString().trim();
-      if (!slot) return;
-      const subject = row[horaCol + 1 + di]?.toString().trim() || '';
-      scheduleMap[day][slot] = subject;
+
+  wb.SheetNames.forEach(sheetName => {
+    const sh = wb.Sheets[sheetName];
+    const matrix = XLSX.utils.sheet_to_json(sh, { header: 1, defval: '' });
+
+    // Buscamos fila donde aparezca "Hora"
+    const headerIdx = matrix.findIndex(r => r.some(c => normalize(c) === 'hora'));
+    if (headerIdx < 0) return; // omitir si no hay
+
+    const header = matrix[headerIdx];
+    const horaCol = header.findIndex(c => normalize(c) === 'hora');
+
+    // Las demás columnas son días (E.g. "Lunes 11 de Agosto" → normalize → "lunes 11 de agosto")
+    const days = header.slice(horaCol + 1).map(normalize).filter(d => d);
+
+    const rows = matrix.slice(headerIdx + 1);
+    const dayMap = {};
+
+    days.forEach((dayKey, di) => {
+      dayMap[dayKey] = {};
+      rows.forEach(r => {
+        const slot = r[horaCol]?.toString().trim();
+        if (!slot) return;
+        const subj = r[horaCol + 1 + di]?.toString().trim() || '';
+        dayMap[dayKey][slot] = subj;
+      });
     });
+
+    scheduleMap[sheetName] = dayMap;
   });
+
+  console.log('📅 [Scheduler] horarios cargados:', Object.keys(scheduleMap));
 }
 
 /** Elige saludo según hora local */
 function getGreeting() {
   const h = new Date().getHours();
-  if (h < 12) return 'buenos días';
-  if (h < 18) return 'buenas tardes';
-  return 'buenas noches';
+  return h < 12 ? 'buenos días' : h < 18 ? 'buenas tardes' : 'buenas noches';
 }
 
 /**
- * Programa recordatorios semanales 5 minutos antes de cada clase.
- * @param {import('whatsapp-web.js').Client} client - Cliente WhatsApp
- * @param {string} groupId - ID del grupo (ej. '123@g.us')
+ * Programa recordatorios semanales personalizados por grupo
+ * @param {import('whatsapp-web.js').Client} client
+ * @param {{ A: string[], B: string[] }} groupMap 
  */
-function startScheduler(client, groupId) {
+export function startScheduler(client, groupMap) {
   loadSchedule();
-  const weekdays = ['domingo','lunes','martes','miercoles','jueves','viernes','sabado'];
 
-  Object.entries(scheduleMap).forEach(([day, slots]) => {
-    const dow = weekdays.indexOf(day);
-    if (dow < 0) return;
+  // Para cada hoja (A y B)
+  Object.entries(groupMap).forEach(([sheetName, ids]) => {
+    const dayMap = scheduleMap[sheetName];
+    if (!dayMap) {
+      console.warn(`⚠️ [Scheduler] no hay hoja "${sheetName}" en Excel`);
+      return;
+    }
 
-    Object.entries(slots).forEach(([slot, subject]) => {
-      if (!subject) return;
+    console.log(`⏱️ [Scheduler] configurando grupo ${sheetName}:`, ids);
 
-      // Parte robusto por 'a' o 'A'
-      const [start] = slot.split(/\s*[aA]\s*/);
-      let [h, m] = start.split(':').map(n => parseInt(n, 10));
-      if (h === 24) h = 0;
-      m -= 5;
-      if (m < 0) { m += 60; h = (h + 23) % 24; }
+    // Cada día del mapa
+    Object.entries(dayMap).forEach(([dayKey, slots]) => {
+      // Buscamos índice de weekday [domingo=0,...sábado=6]
+      // expandimos "lunes 11 de agosto" → tomamos la primer palabra
+      const weekdayName = dayKey.split(' ')[0];
+      const idx = ['domingo','lunes','martes','miercoles','jueves','viernes','sabado']
+        .indexOf(normalize(weekdayName));
+      if (idx < 0) return;
 
-      const cronExpr = `${m} ${h} * * ${dow}`;
-      console.log(`⏱️ [Scheduler] Semanal: programando ${slot} (${subject}) cada ${day} a cron '${cronExpr}'`);
+      Object.entries(slots).forEach(([slot, subject]) => {
+        if (!subject) return;
 
-      cron.schedule(cronExpr, async () => {
-        const greeting = getGreeting();
-        const msg = `Muy ${greeting} para todos nuestros futuros Subintendentes, en un momento podrán ingresar a su clase de "${subject}". Importante no faltar.`;
-        try {
-          await client.sendMessage(groupId, msg);
-          console.log(`✅ [Scheduler] Recordatorio enviado (${day} ${slot}): ${subject}`);
-        } catch (err) {
-          console.error('❌ [Scheduler] Error enviando:', err);
-        }
-      }, { timezone: 'America/Bogota' });
+        // parseo “6:00 a 8:00”
+        const [start] = slot.split(/\s*a\s*/i);
+        let [h,m] = start.split(':').map(n => parseInt(n,10));
+        if (h===24) h=0;
+        m -= 5;
+        if (m<0) { m+=60; h=(h+23)%24; }
+
+        const cronExpr = `${m} ${h} * * ${idx}`;
+        console.log(`📌 [Scheduler][${sheetName}] ${slot} → "${subject}" → cron '${cronExpr}' (day=${dayKey})`);
+
+        cron.schedule(cronExpr, async () => {
+          const greeting = getGreeting();
+          const msg = `Muy ${greeting} para todos nuestros futuros Subintendentes,\n` +
+                      `en un momento podrán ingresar a su clase de "${subject}".\n` +
+                      `¡Importante no faltar!`;
+          for (const gid of ids) {
+            try {
+              await client.sendMessage(gid, msg);
+              console.log(`✅ [Scheduler][${sheetName}] enviado a ${gid}: ${dayKey} ${slot}`);
+            } catch (e) {
+              console.error(`❌ [Scheduler][${sheetName}] error al enviar a ${gid}:`, e);
+            }
+          }
+        }, { timezone: 'America/Bogota' });
+      });
     });
   });
 }
-
-export { startScheduler };
