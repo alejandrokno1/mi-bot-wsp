@@ -2,15 +2,35 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <title>Dashboard Bot WhatsApp</title>
+  <title>Panel de Control del Bot 📊</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <h1>Panel de Control del Bot 📊</h1>
-  <ul>
-    <li><a href="/paused">Chats Pausados</a></li>
-    <li><a href="/responded">Chats Respondidos</a></li>
-    <li><a href="/schedule">Horario de Clases</a></li>
-  </ul>
+  <div class="container">
+    <h1>Panel de Control del Bot 📊</h1>
+
+    <div class="card-grid">
+      <a class="card" href="/paused">
+        <span class="icon">⏸️</span>
+        Chats Pausados
+      </a>
+      <a class="card" href="/responded">
+        <span class="icon">✅</span>
+        Chats Respondidos
+      </a>
+      <a class="card" href="/schedule">
+        <span class="icon">📅</span>
+        Horario de Clases
+      </a>
+      <a class="card" href="/tutorial-status">
+        <span class="icon">🎥</span>
+        Estado del Tutorial
+      </a>
+    </div>
+
+    <footer>
+      &copy; 2025 Coordinación y Asesorías Nasly Beltrán
+    </footer>
+  </div>
 </body>
 </html>

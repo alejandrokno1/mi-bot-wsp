@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Estado del Tutorial</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <h1>Estado del Tutorial 🎥</h1>
+  <p><a href="/">← Volver al menú</a></p>
+
+  <% if (rows.length === 0) { %>
+    <p>No hay usuarios registrados.</p>
+  <% } else { %>
+    <table border="1" cellpadding="8">
+      <thead>
+        <tr>
+          <th>Teléfono (chat_id)</th>
+          <th>Nombre</th>
+          <th>Video enviado</th>
+          <th>Confirmó haberlo visto</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% rows.forEach(r => { %>
+          <tr>
+            <td><%= r.chat_id %></td>
+            <td><%= r.name || '—' %></td>
+            <td><%= r.asked ? '✅ Sí' : '❌ No' %></td>
+            <td><%= r.done  ? '✅ Sí' : '❌ No' %></td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  <% } %>
+</body>
+</html>

@@ -1,0 +1,19 @@
+2025/08/06-20:06:29.854 38e0 Reusing MANIFEST C:\Users\profe\OneDrive\Escritorio\WspIA\mi-bot-wsp\.wwebjs_auth\session-bot-ia\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2025/08/06-20:06:29.855 38e0 Recovering log #473
+2025/08/06-20:06:29.912 38e0 Reusing old log C:\Users\profe\OneDrive\Escritorio\WspIA\mi-bot-wsp\.wwebjs_auth\session-bot-ia\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/000473.log 
+2025/08/06-20:06:34.094 5964 Level-0 table #481: started
+2025/08/06-20:06:34.111 5964 Level-0 table #481: 422571 bytes OK
+2025/08/06-20:06:34.113 5964 Delete type=0 #473
+2025/08/06-20:06:34.114 5964 Manual compaction at level-0 from '\x00r\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00s\x00\x00\x00' @ 0 : 0; will stop at (end)
+2025/08/06-20:06:36.224 5964 Compacting 1@1 + 4@2 files
+2025/08/06-20:06:36.343 5964 Generated table #482@1: 84773 keys, 2232876 bytes
+2025/08/06-20:06:36.477 5964 Generated table #483@1: 89653 keys, 2311690 bytes
+2025/08/06-20:06:36.556 5964 Generated table #484@1: 5951 keys, 2260173 bytes
+2025/08/06-20:06:36.672 5964 Generated table #485@1: 60482 keys, 2186359 bytes
+2025/08/06-20:06:36.672 5964 Compacted 1@1 + 4@2 files => 8991098 bytes
+2025/08/06-20:06:36.674 5964 compacted to: files[ 0 0 4 0 0 0 0 ]
+2025/08/06-20:06:36.674 5964 Delete type=2 #475
+2025/08/06-20:06:36.674 5964 Delete type=2 #476
+2025/08/06-20:06:36.674 5964 Delete type=2 #477
+2025/08/06-20:06:36.674 5964 Delete type=2 #478
+2025/08/06-20:06:36.674 5964 Delete type=2 #481

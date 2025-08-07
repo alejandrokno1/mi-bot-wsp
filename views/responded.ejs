@@ -1,52 +1,69 @@
+<!-- views/responded.ejs -->
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8">
-  <title>Chats Respondidos</title>
-  <link rel="stylesheet" href="/static/styles.css">
+  <meta charset="UTF-8" />
+  <title>Chats Respondidos ✅</title>
+  <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
-  <h1>Chats Respondidos ✅</h1>
-  <p><a href="/">← Volver al menú</a></p>
+  <div class="container">
+    <h1>Chats Respondidos ✅</h1>
+    <p><a href="/">← Volver al menú</a></p>
 
-  <% if (chats.length === 0) { %>
-    <p>Aún no hay respuestas registradas.</p>
-  <% } else { %>
-    <table border="1" cellpadding="8">
+    <table>
       <thead>
         <tr>
-          <th>chat_id</th>
+          <th>Nombre</th>
+          <th>Teléfono</th>
           <th>Última respuesta</th>
         </tr>
       </thead>
-      <tbody id="responded-body">
-        <% chats.forEach(c => { %>
-          <tr>
-            <td><%= c.chat_id %></td>
-            <td><%= new Date(c.last_response).toLocaleString('es-CO') %></td>
-          </tr>
-        <% }) %>
+      <tbody id="chats-body">
+        <!-- Aquí iremos inyectando las filas -->
       </tbody>
     </table>
-  <% } %>
+  </div>
 
   <script>
-    // Polling cada 10s para refrescar la tabla
-    async function refreshResponded() {
-      const res = await fetch('/responded-data');
-      if (!res.ok) return;
-      const chats = await res.json();
-      const tbody = document.getElementById('responded-body');
-      tbody.innerHTML = chats.map(c => `
-        <tr>
-          <td>${c.chat_id}</td>
-          <td>${new Date(c.last_response).toLocaleString('es-CO')}</td>
-        </tr>
-      `).join('');
+    // Formatea la fecha al estilo "7/8/2025, 7:30:45 p. m."
+    function formatDate(dtString) {
+      const dt = new Date(dtString);
+      return dt.toLocaleString('es-CO', {
+        day:   'numeric', month: 'numeric', year: 'numeric',
+        hour:  'numeric', minute: '2-digit', second: '2-digit'
+      });
     }
 
-    refreshResponded();
-    setInterval(refreshResponded, 10_000);
+    async function loadChats() {
+      try {
+        const res = await fetch('/responded-data');
+        const chats = await res.json();
+
+        const tbody = document.getElementById('chats-body');
+        tbody.innerHTML = '';  // limpiamos
+
+        for (const { chat_id, name, last_response } of chats) {
+          // phone formateado: quitamos '@...' y anteponemos +57-
+          const rawNum = chat_id.split('@')[0];
+          const phone  = '+57-' + rawNum;
+
+          const row = document.createElement('tr');
+          row.innerHTML = `
+            <td>${name || '–'}</td>
+            <td>${phone}</td>
+            <td>${formatDate(last_response)}</td>
+          `;
+          tbody.appendChild(row);
+        }
+      } catch (e) {
+        console.error('Error cargando chats respondidos:', e);
+      }
+    }
+
+    // Primera carga y luego cada 15 segundos
+    loadChats();
+    setInterval(loadChats, 15000);
   </script>
 </body>
 </html>

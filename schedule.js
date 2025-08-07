@@ -100,7 +100,7 @@ export function startScheduler(client, groupMap) {
         if (m<0) { m+=60; h=(h+23)%24; }
 
         const cronExpr = `${m} ${h} * * ${idx}`;
-        console.log(`📌 [Scheduler][${sheetName}] ${slot} → "${subject}" → cron '${cronExpr}' (day=${dayKey})`);
+        
 
         cron.schedule(cronExpr, async () => {
           const greeting = getGreeting();
@@ -110,7 +110,7 @@ export function startScheduler(client, groupMap) {
           for (const gid of ids) {
             try {
               await client.sendMessage(gid, msg);
-              console.log(`✅ [Scheduler][${sheetName}] enviado a ${gid}: ${dayKey} ${slot}`);
+              
             } catch (e) {
               console.error(`❌ [Scheduler][${sheetName}] error al enviar a ${gid}:`, e);
             }

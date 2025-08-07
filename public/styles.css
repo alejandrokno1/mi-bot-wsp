@@ -1,0 +1,189 @@
+/* public/styles.css */
+
+/* Reset básico */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* Tipografía y fondo */
+body {
+  font-family: Arial, sans-serif;
+  background-color: #f5f7fa;
+  color: #333;
+  line-height: 1.6;
+}
+
+/* Contenedor principal */
+.container {
+  max-width: 900px;
+  margin: 40px auto;
+  padding: 20px;
+  background-color: #fff;
+  border-radius: 8px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+}
+
+/* Encabezados */
+h1 {
+  text-align: center;
+  margin-bottom: 20px;
+  color: #2c3e50;
+}
+
+/* Menú de navegación */
+nav ul {
+  list-style: none;
+  display: flex;
+  justify-content: center;
+  margin-bottom: 30px;
+}
+nav ul li {
+  margin: 0 15px;
+}
+nav ul li a {
+  text-decoration: none;
+  color: #2980b9;
+  font-weight: bold;
+}
+nav ul li a:hover {
+  text-decoration: underline;
+}
+
+/* Tablas */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 20px;
+}
+table th, table td {
+  border: 1px solid #ddd;
+  padding: 10px;
+  text-align: left;
+}
+table th {
+  background-color: #ecf0f1;
+  color: #2c3e50;
+}
+table tr:nth-child(even) {
+  background-color: #f9f9f9;
+}
+
+/* Botones */
+button, .btn {
+  display: inline-block;
+  padding: 8px 14px;
+  background-color: #27ae60;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  text-decoration: none;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+button:hover, .btn:hover {
+  background-color: #1e8449;
+}
+
+/* Formularios inline */
+form.inline {
+  display: inline;
+}
+
+/* Pie de página */
+footer {
+  text-align: center;
+  margin-top: 30px;
+  font-size: 0.8rem;
+  color: #777;
+}
+
+
+/* estilos generales ya cargados antes... */
+
+/* -------------------------------------------------- */
+/* Estilos específicos para index.ejs (página inicial) */
+/* -------------------------------------------------- */
+
+/* Título principal */
+h1 {
+  font-size: 2.5rem;
+  margin-bottom: 1rem;
+  color: #2c3e50;
+}
+
+/* Grid de “tarjetas” */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+  margin-top: 2rem;
+}
+
+/* Cada tarjeta / botón grande */
+.card {
+  background-color: #fff;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 1.2rem;
+  text-align: center;
+  text-decoration: none;
+  color: #2980b9;
+  font-weight: 600;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+.card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+}
+
+/* Íconos opcionales junto al texto */
+.card span.icon {
+  display: block;
+  font-size: 2rem;
+  margin-bottom: 0.5rem;
+}
+
+/* Footer */
+footer {
+  margin-top: 3rem;
+  font-size: 0.85rem;
+  color: #777;
+}
+
+body {
+  font-family: Arial, sans-serif;
+  padding: 2rem;
+  background: #f9fafb;
+  color: #333;
+}
+h1 {
+  text-align: center;
+  margin-bottom: 1rem;
+}
+a {
+  color: #4f46e5;
+  text-decoration: none;
+  margin-bottom: 1rem;
+  display: inline-block;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+}
+th, td {
+  padding: 0.75rem;
+  border: 1px solid #ddd;
+  text-align: left;
+}
+th {
+  background: #4b5563;
+  color: white;
+}
+tbody tr:nth-child(even) {
+  background: #f3f4f6;
+}
