@@ -3,66 +3,142 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
-  <title>Chats Respondidos ✅</title>
+  <title>Chats Respondidos y Estado del Tutorial 📊</title>
   <link rel="stylesheet" href="/static/styles.css" />
+  <style>
+    #search {
+      width: 100%;
+      padding: 8px 12px;
+      margin-bottom: 1rem;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 1rem;
+    }
+  </style>
 </head>
 <body>
   <div class="container">
-    <h1>Chats Respondidos ✅</h1>
+    <h1>Chats Respondidos y Estado del Tutorial 📊</h1>
     <p><a href="/">← Volver al menú</a></p>
+
+    <input id="search" placeholder="Buscar por número…" />
 
     <table>
       <thead>
         <tr>
+          <th>#</th>                              <!-- Nueva columna -->
           <th>Nombre</th>
           <th>Teléfono</th>
           <th>Última respuesta</th>
+          <th>Respondido por</th>
+          <th>Video enviado</th>
+          <th>Confirmó haberlo visto</th>
         </tr>
       </thead>
       <tbody id="chats-body">
-        <!-- Aquí iremos inyectando las filas -->
+        <!-- Filas inyectadas por JS -->
       </tbody>
     </table>
   </div>
 
   <script>
-    // Formatea la fecha al estilo "7/8/2025, 7:30:45 p. m."
     function formatDate(dtString) {
+      if (!dtString) return '–';
       const dt = new Date(dtString);
       return dt.toLocaleString('es-CO', {
-        day:   'numeric', month: 'numeric', year: 'numeric',
-        hour:  'numeric', minute: '2-digit', second: '2-digit'
+        day: 'numeric', month: 'numeric', year: 'numeric',
+        hour: 'numeric', minute: '2-digit', second: '2-digit'
+      });
+    }
+
+    function filterRows() {
+      const q = document.getElementById('search').value.trim().toLowerCase();
+      document.querySelectorAll('#chats-body tr').forEach(tr => {
+        const phone = tr.querySelector('.phone-cell').textContent.toLowerCase();
+        tr.style.display = phone.includes(q) ? '' : 'none';
       });
     }
 
     async function loadChats() {
       try {
-        const res = await fetch('/responded-data');
+        const res   = await fetch('/responded-data');
         const chats = await res.json();
-
         const tbody = document.getElementById('chats-body');
-        tbody.innerHTML = '';  // limpiamos
+        tbody.innerHTML = '';
 
-        for (const { chat_id, name, last_response } of chats) {
-          // phone formateado: quitamos '@...' y anteponemos +57-
+        chats.forEach((chat, idx) => {
+          const {
+            chat_id,
+            name,
+            last_response,
+            status,
+            video_enviado,
+            confirmado_visto
+          } = chat;
+
+          // 1) Separa el rawNum y extrae CC/local (últimos 10 dígitos)
           const rawNum = chat_id.split('@')[0];
-          const phone  = '+57-' + rawNum;
+          let phone;
+          if (rawNum.length > 10) {
+            const cc    = rawNum.slice(0, rawNum.length - 10);
+            const local = rawNum.slice(-10);
+            phone = `+${cc}-${local}`;
+          } else {
+            phone = `+${rawNum}`;
+          }
 
+          // 2) Quién responde
+          const respondedBy = status === 'paused' ? 'Humano' : 'Bot';
+
+          // 3) Íconos de tutorial
+          const yes = '<span class="icon-yes">✅ Sí</span>';
+          const no  = '<span class="icon-no">❌ No</span>';
+
+          // 4) Construye la fila
           const row = document.createElement('tr');
+          row.classList.add(status === 'paused' ? 'row-humano' : 'row-bot');
           row.innerHTML = `
-            <td>${name || '–'}</td>
-            <td>${phone}</td>
+            <td>${idx + 1}</td>                                  <!-- Número -->
+            <td class="editable-name"
+                contenteditable="true"
+                data-chat-id="${chat_id}"
+            >${name || '–'}</td>
+            <td class="phone-cell">${phone}</td>
             <td>${formatDate(last_response)}</td>
+            <td>${respondedBy}</td>
+            <td>${video_enviado ? yes : no}</td>
+            <td>${confirmado_visto ? yes : no}</td>
           `;
           tbody.appendChild(row);
-        }
+        });
+
+        filterRows();
       } catch (e) {
-        console.error('Error cargando chats respondidos:', e);
+        console.error('Error cargando chats:', e);
       }
     }
 
-    // Primera carga y luego cada 15 segundos
+    // Al salir de la celda editable, guarda el nuevo nombre
+    document.getElementById('chats-body').addEventListener('blur', async e => {
+      if (!e.target.classList.contains('editable-name')) return;
+      const cell    = e.target;
+      const newName = cell.textContent.trim();
+      const chatId  = cell.dataset.chatId;
+      try {
+        const resp = await fetch('/api/update-name', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, name: newName })
+        });
+        if (!resp.ok) throw new Error();
+      } catch {
+        alert('No se pudo actualizar el nombre');
+      }
+    }, true);
+
+    // Inicialización
     loadChats();
+    document.getElementById('search').addEventListener('input', filterRows);
     setInterval(loadChats, 15000);
   </script>
 </body>

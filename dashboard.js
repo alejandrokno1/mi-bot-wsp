@@ -5,104 +5,100 @@ import bodyParser from 'body-parser';
 import Database from 'better-sqlite3';
 import { loadSchedule, scheduleMap } from './schedule.js';
 
-// Inicializa la base de datos
-const db = new Database('bot-data.db');
-
-// Carga el horario en memoria al inicio
-loadSchedule();
-
 const app = express();
 const PORT = process.env.PORT || 3000;
+const db   = new Database('bot-data.db');
 
-// Configuración de vistas y estáticos
+// Carga inicial del horario
+loadSchedule();
+
+// Vistas y estáticos
 app.set('views', path.join(process.cwd(), 'views'));
 app.set('view engine', 'ejs');
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use('/static', express.static(path.join(process.cwd(), 'public')));
 
-// ─────────────────────────────────────────────────────────────────────────────
 // 1) Menú principal
-// ─────────────────────────────────────────────────────────────────────────────
 app.get('/', (req, res) => {
   res.render('index');
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 2) Chats pausados
-// ─────────────────────────────────────────────────────────────────────────────
-app.get('/paused', (req, res) => {
-  const chats = db.prepare('SELECT chat_id FROM paused_chats').all();
-  res.render('paused', { chats });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 3) Chats respondidos (vista), con hora convertida a localtime
-// ─────────────────────────────────────────────────────────────────────────────
+// 2) Chats respondidos (solo renderiza la vista; los datos vienen por AJAX)
 app.get('/responded', (req, res) => {
-  const chats = db.prepare(`
-    SELECT
-      rc.chat_id,
-      u.name,
-      datetime(rc.last_response, 'localtime') AS last_response
-    FROM responded_chats rc
-    LEFT JOIN users u ON rc.chat_id = u.chat_id
-    ORDER BY rc.last_response DESC
-  `).all();
-  res.render('responded', { chats });
+  res.render('responded');
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 4) Endpoint JSON para polling en vivo desde responded.ejs
-// ─────────────────────────────────────────────────────────────────────────────
+// 3) Endpoint JSON que devuelve:
+//    - chats “responded” y “paused”
+//    - nombre de usuario
+//    - última respuesta (solo para responded)
+//    - status (‘responded’ ó ‘paused’)
+//    - estado del tutorial: asked  ⇒ video_enviado
+//                         done   ⇒ confirmado_visto
 app.get('/responded-data', (req, res) => {
-  const data = db.prepare(`
-    SELECT
-      rc.chat_id,
-      u.name,
-      datetime(rc.last_response, 'localtime') AS last_response
-    FROM responded_chats rc
-    LEFT JOIN users u ON rc.chat_id = u.chat_id
-    ORDER BY rc.last_response DESC
-  `).all();
+  const sql = `
+    SELECT * FROM (
+      -- Chats respondidos
+      SELECT
+        rc.chat_id,
+        u.name,
+        datetime(rc.last_response, 'localtime') AS last_response,
+        'responded'           AS status,
+        (ta.chat_id IS NOT NULL) AS video_enviado,
+        (td.chat_id IS NOT NULL) AS confirmado_visto
+      FROM responded_chats rc
+      LEFT JOIN users u           ON rc.chat_id = u.chat_id
+      LEFT JOIN tutorial_asked ta ON rc.chat_id = ta.chat_id
+      LEFT JOIN tutorial_done  td ON rc.chat_id = td.chat_id
+
+      UNION ALL
+
+      -- Chats pausados
+      SELECT
+        pc.chat_id,
+        u.name,
+        NULL                   AS last_response,
+        'paused'              AS status,
+        (ta.chat_id IS NOT NULL) AS video_enviado,
+        (td.chat_id IS NOT NULL) AS confirmado_visto
+      FROM paused_chats pc
+      LEFT JOIN users u           ON pc.chat_id = u.chat_id
+      LEFT JOIN tutorial_asked ta ON pc.chat_id = ta.chat_id
+      LEFT JOIN tutorial_done  td ON pc.chat_id = td.chat_id
+    )
+    ORDER BY 
+      -- Primero los responded (tienen last_response), luego los paused
+      last_response IS NULL, 
+      last_response DESC
+  `;
+  const data = db.prepare(sql).all();
   res.json(data);
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 5) Horario de clases
-// ─────────────────────────────────────────────────────────────────────────────
+// 4) Horario de clases
 app.get('/schedule', (req, res) => {
   res.render('schedule', { scheduleMap });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 6) Recargar horario (Excel)
-// ─────────────────────────────────────────────────────────────────────────────
+// 5) Recargar horario (Excel)
 app.post('/reload-schedule', (req, res) => {
   loadSchedule();
   res.redirect('/schedule');
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 7) Estado del tutorial (asked vs. done), con nombres de usuario
-// ─────────────────────────────────────────────────────────────────────────────
-app.get('/tutorial-status', (req, res) => {
-  const rows = db.prepare(`
-    SELECT 
-      u.chat_id,
-      u.name,
-      ta.chat_id IS NOT NULL AS asked,
-      td.chat_id IS NOT NULL AS done
-    FROM users u
-    LEFT JOIN tutorial_asked ta ON u.chat_id = ta.chat_id
-    LEFT JOIN tutorial_done  td ON u.chat_id = td.chat_id
-    ORDER BY COALESCE(u.name, u.chat_id) COLLATE NOCASE
-  `).all();
-  res.render('tutorial-status', { rows });
+// Recibe las actualizaciones de nombre editadas inline
+app.post('/api/update-name', express.json(), (req, res) => {
+  const { chat_id, name } = req.body;
+  // Actualiza en la tabla de usuarios
+  db.prepare('UPDATE users SET name = ? WHERE chat_id = ?')
+    .run(name, chat_id);
+  res.json({ success: true });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 8) Levanta el servidor
-// ─────────────────────────────────────────────────────────────────────────────
+
+
+
+// 6) Levanta el servidor
 app.listen(PORT, () => {
   console.log(`📊 Dashboard corriendo en http://localhost:${PORT}`);
 });

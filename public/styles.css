@@ -154,6 +154,7 @@ footer {
   color: #777;
 }
 
+/* Ajustes generales adicionales */
 body {
   font-family: Arial, sans-serif;
   padding: 2rem;
@@ -186,4 +187,34 @@ th {
 }
 tbody tr:nth-child(even) {
   background: #f3f4f6;
+}
+
+/* -------------------------------------------------- */
+/* Ajustes para responded.ejs                         */
+/* -------------------------------------------------- */
+
+table thead th:nth-child(3),
+table tbody td:nth-child(3) {
+  width: 20%;
+}
+table thead th:nth-child(5),
+table thead th:nth-child(6),
+table tbody td:nth-child(5),
+table tbody td:nth-child(6) {
+  width: 10%;
+  text-align: center;
+}
+
+.row-bot    { background-color: #e8f5e9; }
+.row-humano { background-color: #fff3e0; }
+
+.icon-yes { color: #27ae60; font-weight: bold; }
+.icon-no  { color: #c0392b; font-weight: bold; }
+
+table th, table td {
+  padding: 12px 10px;
+}
+
+.container {
+  overflow-x: auto;
 }
