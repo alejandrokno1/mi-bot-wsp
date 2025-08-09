@@ -11,10 +11,8 @@ import Database from 'better-sqlite3';
 
 // Pagos: detector + mensaje de redirección
 import { detectPaymentIntent, paymentRedirectMessage } from './src/utils/payment.js';
-
 // Clasificador general (horario / tóxico / crisis)
 import { classify } from './src/utils/classifier.js';
-
 // Horario (responder y scheduler)
 import { buildScheduleMessage, startScheduler } from './src/utils/schedule.js';
 
@@ -38,8 +36,9 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS tutorial_asked ( chat_id TEXT PRIMARY KEY );
   CREATE TABLE IF NOT EXISTS tutorial_done  ( chat_id TEXT PRIMARY KEY );
   CREATE TABLE IF NOT EXISTS users (
-    chat_id TEXT PRIMARY KEY,
-    name    TEXT
+    chat_id    TEXT PRIMARY KEY,
+    name       TEXT,
+    group_pref TEXT
   );
   CREATE TABLE IF NOT EXISTS scheduler_logs (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,41 +51,185 @@ db.exec(`
     ok         INTEGER,
     error      TEXT
   );
+
+  -- 👇 Estas dos garantizan que el bot pueda leer settings/ventanas aunque el dashboard no se haya abierto
+  CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+  );
+  CREATE TABLE IF NOT EXISTS bot_windows (
+    dow     INTEGER PRIMARY KEY,  -- 0..6
+    start   TEXT NOT NULL DEFAULT '00:00',
+    end     TEXT NOT NULL DEFAULT '00:00',
+    enabled INTEGER NOT NULL DEFAULT 0
+  );
 `);
 const pausedChats = new Set(
   db.prepare('SELECT chat_id FROM paused_chats').all().map(r => r.chat_id)
 );
 
-// columna para preferencia A/B (idempotente)
-try { db.exec(`ALTER TABLE users ADD COLUMN group_pref TEXT`); } catch {}
+// --------- Apagado suave: settings + ventanas + helper horario ---------
+function readAllSettings() {
+  const rows = db.prepare('SELECT key,value FROM settings').all();
+  const out = {};
+  for (const r of rows) {
+    const v = r.value;
+    if (v === '0' || v === '1') out[r.key] = v;
+    else {
+      try { out[r.key] = JSON.parse(v); } catch { out[r.key] = v; }
+    }
+  }
+  return out;
+}
+function readWindows() {
+  return db.prepare('SELECT dow, start, end, enabled FROM bot_windows ORDER BY dow').all();
+}
+
+// Cache ligero (se refresca cada 20s)
+let cfgCache = { settings: null, windows: [], ts: 0 };
+function getConfig(force = false) {
+  const now = Date.now();
+  if (force || now - cfgCache.ts > 20000 || !cfgCache.settings) {
+    cfgCache.settings = readAllSettings();
+    cfgCache.windows = readWindows();
+    cfgCache.ts = now;
+  }
+  return cfgCache;
+}
+
+// Obtener hora/minuto y día en una TZ
+function getNowInTZ(tz = 'America/Bogota') {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz, hour12: false,
+    weekday: 'short', hour: '2-digit', minute: '2-digit'
+  }).formatToParts(new Date());
+  const get = n => parts.find(p => p.type === n)?.value;
+  const w = (get('weekday') || 'sun').toLowerCase(); // sun..sat
+  const map = { sun:0, mon:1, tue:2, wed:3, thu:4, fri:5, sat:6 };
+  const dow = map[w] ?? 0;
+  const hour = parseInt(get('hour') || '0', 10);
+  const minute = parseInt(get('minute') || '0', 10);
+  return { dow, hour, minute };
+}
+
+// ¿Está dentro de alguna ventana activa para ese día?
+function isWithinWorkingHours(dow, hour, minute, windows) {
+  const pad = n => String(n).padStart(2,'0');
+  const nowHM = `${pad(hour)}:${pad(minute)}`;
+  const dayRows = windows.filter(w => Number(w.dow) === dow && Number(w.enabled) === 1);
+
+  for (const w of dayRows) {
+    const start = (w.start || '00:00').slice(0,5);
+    const end   = (w.end   || '00:00').slice(0,5);
+
+    // Caso simple (no cruza medianoche): start <= now < end
+    if (start <= end) {
+      if (start <= nowHM && nowHM < end) return true;
+    } else {
+      // Cruza medianoche (ej 22:00-02:00): now >= start OR now < end
+      if (nowHM >= start || nowHM < end) return true;
+    }
+  }
+  return false;
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // 1️⃣  Cliente WhatsApp & OpenAI
 ////////////////////////////////////////////////////////////////////////////////
 const client = new Client({
-  authStrategy: new LocalAuth({ clientId: 'bot-ia' })
+  authStrategy: new LocalAuth({ clientId: 'bot-ia' }),
+  puppeteer: {
+    headless: true,
+    args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu','--no-zygote']
+  }
 });
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+
+
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY || '' });
 const history = new Map();
 const ADMIN = process.env.ADMIN_WAID; // ej: 57XXXXXXXXXX@c.us
 
 // Elección A/B temporal (con timeout)
 const pendingScheduleChoice = new Map(); // chatId -> { hint, timer }
-
 // Confirmación de pago (SI/NO) cuando es ambiguo
 const pendingPaymentConfirm = new Map(); // chatId -> timeoutId
 
-// Detectar grupo A/B desde el texto ("grupo a", "horario b", "para A"...)
-function detectGroupFromText(t) {
-  const m = String(t).toLowerCase().match(/\b(grupo|horario|para|del|de)?\s*(grupo\s*)?([ab])\b/);
-  return m ? m[3].toUpperCase() : null;
+// --- IPC helper para reportar estado al dashboard ---
+function report(type, data = {}) {
+  try { if (process.send) process.send({ type, data }); } catch {}
 }
 
-// —— Anti-spam: cola con concurrencia + “ritmo humano” ——
-// (enviar mensajes con cola y typing indicator)
+// Escuchar órdenes del orquestador (dashboard)
+process.on('message', async (m) => {
+  if (!m || typeof m !== 'object') return;
+  if (m.type === 'logout') {
+    try { await client.logout(); } catch (e) { console.warn('logout() falló:', e?.message || e); }
+    try { await client.destroy(); } catch {}
+    // informar al dashboard que quedamos sin sesión: pedirá QR al reiniciar
+    report('status', { connected:false, ready:false, needsQR:true, qr:null });
+    try { if (process.send) process.send({ type:'logout_ok' }); } catch {}
+  }
+});
+
+// Reporte inicial de arranque
+report('status', { started: true, connected: false, ready: false, needsQR: false });
+
+////////////////////////////////////////////////////////////////////////////////
+// 2️⃣  Eventos de sesión (QR / auth / ready / desconexión)
+////////////////////////////////////////////////////////////////////////////////
+client.on('qr', (qr) => {
+  qrcode.generate(qr, { small: true }); // consola
+  console.log('🔑 QR recibido. Puedes escanearlo también desde la página de configuración.');
+  report('qr', qr);
+  report('status', { needsQR: true, connected: false, ready: false });
+});
+
+client.on('authenticated', () => {
+  console.log('✅ Autenticado.');
+  report('status', { connected: true, needsQR: false });
+});
+
+client.on('ready', () => {
+  console.log('Mi WAID:', client.info?.wid?._serialized);
+  console.log('💚 WhatsApp Web listo');
+  report('ready');
+  report('status', { connected: true, ready: true, needsQR: false, qr: null });
+
+  // Scheduler: leer IDs desde config y registrar logs
+  try {
+    const groups = JSON.parse(fs.readFileSync('config/groups.json', 'utf8'));
+    const stmt = db.prepare(`
+      INSERT INTO scheduler_logs(group_name, group_id, day_key, slot, subject, ok, error)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    startScheduler(client, groups, ({ sheetName, gid, dayKey, slot, subject, ok, error }) => {
+      stmt.run(sheetName, gid, dayKey, slot, subject, ok ? 1 : 0, error || null);
+    });
+    console.log('⏱️ Scheduler reactivado con grupos de config/groups.json');
+  } catch (e) {
+    console.warn('No pude iniciar el scheduler:', e?.message || e);
+  }
+});
+
+client.on('auth_failure', (m) => {
+  console.error('❌ auth_failure:', m);
+  report('status', { connected: false, ready: false, needsQR: true });
+});
+
+client.on('disconnected', (reason) => {
+  console.warn('⚠️ disconnected:', reason);
+  report('disconnected', { reason });
+  report('status', { connected: false, ready: false });
+});
+
+////////////////////////////////////////////////////////////////////////////////
+// 3️⃣  Anti-spam: cola + “ritmo humano”
+////////////////////////////////////////////////////////////////////////////////
 const MAX_CONCURRENCY = 3;
 let activeSends = 0;
-const sendQueue = []; // [{fn, resolve, reject}]
+const sendQueue = [];
 
 function processSendQueue() {
   if (activeSends >= MAX_CONCURRENCY) return;
@@ -110,19 +253,15 @@ function enqueueSend(fn) {
   });
 }
 
-// pequeña espera aleatoria
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 
-// calcula delay “humano” según largo del texto
 function typingDelayFor(text = '') {
-  const base = rand(500, 1200);                    // latencia base
+  const base = rand(500, 1200);
   const perChar = Math.min(2000, text.length * 15); // 15ms/char, tope 2s
   return base + perChar;
 }
 
-// Enviar simulando que escribe (usa cola y typing indicator)
-// ✅ corregido: NO se llama a sí misma (sin recursión) y sin `opts`
 async function replyHuman(msg, text) {
   return enqueueSend(async () => {
     try {
@@ -132,14 +271,12 @@ async function replyHuman(msg, text) {
       const res = await msg.reply(text);
       try { await chat.clearState(); } catch {}
       return res;
-    } catch (e) {
-      // fallback sin typing
+    } catch {
       return msg.reply(text);
     }
   });
 }
 
-// Enviar a un chatId (útil para ADMIN u otros), con ritmo humano
 async function sendHumanTo(chatId, text, opts = {}) {
   return enqueueSend(async () => {
     try {
@@ -149,38 +286,20 @@ async function sendHumanTo(chatId, text, opts = {}) {
       const res = await client.sendMessage(chatId, text, opts);
       try { await chat.clearState(); } catch {}
       return res;
-    } catch (e) {
+    } catch {
       return client.sendMessage(chatId, text, opts);
     }
   });
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// 2️⃣  QR + listo
-////////////////////////////////////////////////////////////////////////////////
-client.on('qr', qr => qrcode.generate(qr, { small: true }));
-client.on('ready', () => {
-  console.log('Mi WAID:', client.info?.wid?._serialized);
-  console.log('✅ WhatsApp Web listo');
-
-  // Scheduler: leer IDs desde config y registrar logs
-  try {
-    const groups = JSON.parse(fs.readFileSync('config/groups.json', 'utf8'));
-    const stmt = db.prepare(`
-      INSERT INTO scheduler_logs(group_name, group_id, day_key, slot, subject, ok, error)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
-    startScheduler(client, groups, ({ sheetName, gid, dayKey, slot, subject, ok, error }) => {
-      stmt.run(sheetName, gid, dayKey, slot, subject, ok ? 1 : 0, error || null);
-    });
-    console.log('⏱️ Scheduler reactivado con grupos de config/groups.json');
-  } catch (e) {
-    console.warn('No pude iniciar el scheduler:', e?.message || e);
-  }
-});
+// Detectar grupo A/B desde el texto
+function detectGroupFromText(t) {
+  const m = String(t).toLowerCase().match(/\b(grupo|horario|para|del|de)?\s*(grupo\s*)?([ab])\b/);
+  return m ? m[3].toUpperCase() : null;
+}
 
 ////////////////////////////////////////////////////////////////////////////////
-// 3️⃣  Manejador de mensajes
+// 4️⃣  Manejador de mensajes
 ////////////////////////////////////////////////////////////////////////////////
 client.on('message', async msg => {
   try {
@@ -217,6 +336,27 @@ client.on('message', async msg => {
       db.prepare('INSERT OR IGNORE INTO paused_chats(chat_id) VALUES (?)').run(chatId);
       await replyHuman(msg, 'Entendido ✅ No te escribiré más por este canal. Si deseas reactivar, responde con */bot*.');
       return;
+    }
+
+    // ---- Apagado suave (respetar horarios) ----
+    const { settings, windows } = getConfig(); // cache ~20s
+    const softEnabled = String(settings.bot_soft_enabled ?? '1') === '1';
+    const tz = settings.bot_tz || 'America/Bogota';
+
+    if (softEnabled) {
+      // Permite que el ADMIN siempre pase (para pruebas fuera de horario)
+      const isAdmin = ADMIN && chatId === ADMIN;
+      if (!isAdmin) {
+        const now = getNowInTZ(tz);
+        const within = isWithinWorkingHours(now.dow, now.hour, now.minute, windows);
+        if (!within) {
+          const reply = settings.bot_soft_off_reply
+            || 'Estamos fuera de horario. Te respondemos en nuestro horario de atención.';
+          await replyHuman(msg, reply);
+          recordResponse(chatId);
+          return;
+        }
+      }
     }
 
     // Leer userRow al inicio y reutilizarlo en todo el handler
@@ -267,7 +407,6 @@ client.on('message', async msg => {
       if (g === 'A' || g === 'B') {
         clearTimeout(pend.timer);
         pendingScheduleChoice.delete(chatId);
-        // guardar preferencia
         db.prepare('UPDATE users SET group_pref = ? WHERE chat_id = ?').run(g, chatId);
         userRow = userRow ? { ...userRow, group_pref: g } : { name: null, group_pref: g };
 
@@ -329,15 +468,13 @@ client.on('message', async msg => {
       return;
     }
 
-
-    
     // Stickers
     if (msg.type === 'sticker') {
       await replyHuman(msg, '¡Qué lindo sticker! 😊');
       return;
     }
 
-    // Onboarding de nombre (reutiliza userRow leído arriba)
+    // Onboarding de nombre
     if (!userRow) {
       if (/^(hola|buenos dias|buenas tardes|buenas noches)[!?¡\s]*$/i.test(text)) {
         await replyHuman(msg, '¡Hola! Un gusto conocerte, ¿cómo te llamas? 😊');
@@ -394,7 +531,7 @@ client.on('message', async msg => {
       }
     }
 
-    // Comprobante / matrícula (esto es distinto del detector de pagos)
+    // Comprobante / matrícula
     if (/comprobante/i.test(text) && /matricul/i.test(text)) {
       await replyHuman(msg, MATRICULATION_RESPONSE);
       recordResponse(chatId);

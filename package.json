@@ -5,7 +5,8 @@
   "main": "bot.js",
   "type": "module",
   "scripts": {
-    "start": "node bot.js"
+    "start": "node bot.js",
+     "migrate": "node scripts/migrate.js"
   },
   "author": "",
   "license": "ISC",
@@ -22,3 +23,6 @@
     "xlsx": "^0.18.5"
   }
 }
+
+
+
