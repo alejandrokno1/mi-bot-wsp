@@ -6,14 +6,44 @@
   <title>Chats Respondidos y Estado del Tutorial 📊</title>
   <link rel="stylesheet" href="/static/styles.css" />
   <style>
-    #search {
+    .controls {
+      display: grid;
+      grid-template-columns: 1fr 180px 180px;
+      gap: .75rem;
+      margin-bottom: 1rem;
+      align-items: center;
+    }
+    #search, #status, #pageSize {
       width: 100%;
       padding: 8px 12px;
-      margin-bottom: 1rem;
       border: 1px solid #ccc;
-      border-radius: 4px;
+      border-radius: 6px;
       font-size: 1rem;
     }
+    .pager {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: .75rem;
+      gap: .5rem;
+      flex-wrap: wrap;
+    }
+    .pager button {
+      padding: 6px 10px;
+      border: 1px solid #ddd;
+      background: #fff;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .pager button:disabled { opacity: .5; cursor: default; }
+    .muted { color: #666; font-size: .9rem; }
+    .row-bot    { background: #f8fffa; }
+    .row-humano { background: #fffaf8; }
+    .saved-ok   { outline: 2px solid #32a852; transition: outline 0.4s ease; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid #eee; padding: .5rem .6rem; text-align: left; }
+    th { background: #f7f7f7; }
+    td[contenteditable="true"] { background: #fbfdff; }
   </style>
 </head>
 <body>
@@ -21,12 +51,24 @@
     <h1>Chats Respondidos y Estado del Tutorial 📊</h1>
     <p><a href="/">← Volver al menú</a></p>
 
-    <input id="search" placeholder="Buscar por número…" />
+    <div class="controls">
+      <input id="search" placeholder="Buscar por nombre o número…" />
+      <select id="status">
+        <option value="">Todos (respondidos y pausados)</option>
+        <option value="responded">Solo respondidos</option>
+        <option value="paused">Solo pausados</option>
+      </select>
+      <select id="pageSize">
+        <option value="25">25 por página</option>
+        <option value="50" selected>50 por página</option>
+        <option value="100">100 por página</option>
+      </select>
+    </div>
 
     <table>
       <thead>
         <tr>
-          <th>#</th>                              <!-- Nueva columna -->
+          <th>#</th>
           <th>Nombre</th>
           <th>Teléfono</th>
           <th>Última respuesta</th>
@@ -39,87 +81,167 @@
         <!-- Filas inyectadas por JS -->
       </tbody>
     </table>
+
+    <div class="pager">
+      <div class="muted" id="rangeInfo">Mostrando 0 de 0</div>
+      <div>
+        <button id="prevBtn">← Anterior</button>
+        <button id="nextBtn">Siguiente →</button>
+      </div>
+    </div>
   </div>
 
   <script>
+    // ------------------ Estado UI ------------------
+    const state = {
+      q: '', status: '', page: 1, pageSize: 50, total: 0,
+      autoRefreshMs: 15000, editing: false
+    };
+    let refreshTimer = null;
+    const $ = (sel) => document.querySelector(sel);
+
+    // ------------------ Utils ------------------
     function formatDate(dtString) {
       if (!dtString) return '–';
       const dt = new Date(dtString);
       return dt.toLocaleString('es-CO', {
-        day: 'numeric', month: 'numeric', year: 'numeric',
-        hour: 'numeric', minute: '2-digit', second: '2-digit'
+        day: '2-digit', month: '2-digit', year: 'numeric',
+        hour: '2-digit', minute: '2-digit', second: '2-digit'
+      });
+    }
+    function formatPhone(chat_id) {
+      const raw = String(chat_id || '').split('@')[0] || '';
+      if (!raw) return '–';
+      if (raw.startsWith('+')) return raw;
+      if (raw.length > 10) {
+        const cc = raw.slice(0, raw.length - 10);
+        const local = raw.slice(-10);
+        return `+${cc} ${local}`;
+      }
+      return `+${raw}`;
+    }
+    function yesNoIcon(v) {
+      return v ? '<span class="icon-yes">✅ Sí</span>' : '<span class="icon-no">❌ No</span>';
+    }
+    function debounce(fn, ms=350) {
+      let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); };
+    }
+
+    // ------------------ Fetch + Render ------------------
+    async function fetchResponded() {
+      const p = new URLSearchParams();
+      if (state.q) p.set('q', state.q);
+      if (state.status) p.set('status', state.status);
+      p.set('page', String(state.page));
+      p.set('pageSize', String(state.pageSize));
+      const url = '/responded-data' + (p.toString() ? `?${p.toString()}` : '');
+      const res = await fetch(url);
+      const payload = await res.json();
+      // Soporta backend antiguo (array) y nuevo ({data,total,...})
+      const rows = Array.isArray(payload) ? payload : (payload.data || []);
+      state.total   = Array.isArray(payload) ? rows.length : (payload.total ?? rows.length);
+      return rows;
+    }
+
+    function renderRows(rows) {
+      const tbody = $('#chats-body');
+      tbody.innerHTML = '';
+      const startIndex = (state.page - 1) * state.pageSize;
+
+      rows.forEach((chat, i) => {
+        const {
+          chat_id, name, last_response, status,
+          video_enviado, confirmado_visto
+        } = chat;
+
+        const tr = document.createElement('tr');
+        tr.classList.add(status === 'paused' ? 'row-humano' : 'row-bot');
+
+        tr.innerHTML = `
+          <td>${startIndex + i + 1}</td>
+          <td class="editable-name" contenteditable="true" data-chat-id="${chat_id}"></td>
+          <td class="phone-cell"></td>
+          <td>${formatDate(last_response)}</td>
+          <td>${status === 'paused' ? 'Humano' : 'Bot'}</td>
+          <td>${yesNoIcon(!!video_enviado)}</td>
+          <td>${yesNoIcon(!!confirmado_visto)}</td>
+        `;
+
+        // Asignar con textContent para evitar HTML indeseado
+        tr.querySelector('.editable-name').textContent = name || '–';
+        tr.querySelector('.phone-cell').textContent = formatPhone(chat_id);
+
+        tbody.appendChild(tr);
       });
     }
 
-    function filterRows() {
-      const q = document.getElementById('search').value.trim().toLowerCase();
-      document.querySelectorAll('#chats-body tr').forEach(tr => {
-        const phone = tr.querySelector('.phone-cell').textContent.toLowerCase();
-        tr.style.display = phone.includes(q) ? '' : 'none';
-      });
+    function renderPager() {
+      const start = state.total === 0 ? 0 : (state.page - 1) * state.pageSize + 1;
+      const end   = Math.min(state.total, state.page * state.pageSize);
+      $('#rangeInfo').textContent = `Mostrando ${start}-${end} de ${state.total}`;
+
+      const maxPage = Math.max(1, Math.ceil(state.total / state.pageSize));
+      $('#prevBtn').disabled = state.page <= 1;
+      $('#nextBtn').disabled = state.page >= maxPage;
     }
 
     async function loadChats() {
       try {
-        const res   = await fetch('/responded-data');
-        const chats = await res.json();
-        const tbody = document.getElementById('chats-body');
-        tbody.innerHTML = '';
-
-        chats.forEach((chat, idx) => {
-          const {
-            chat_id,
-            name,
-            last_response,
-            status,
-            video_enviado,
-            confirmado_visto
-          } = chat;
-
-          // 1) Separa el rawNum y extrae CC/local (últimos 10 dígitos)
-          const rawNum = chat_id.split('@')[0];
-          let phone;
-          if (rawNum.length > 10) {
-            const cc    = rawNum.slice(0, rawNum.length - 10);
-            const local = rawNum.slice(-10);
-            phone = `+${cc}-${local}`;
-          } else {
-            phone = `+${rawNum}`;
-          }
-
-          // 2) Quién responde
-          const respondedBy = status === 'paused' ? 'Humano' : 'Bot';
-
-          // 3) Íconos de tutorial
-          const yes = '<span class="icon-yes">✅ Sí</span>';
-          const no  = '<span class="icon-no">❌ No</span>';
-
-          // 4) Construye la fila
-          const row = document.createElement('tr');
-          row.classList.add(status === 'paused' ? 'row-humano' : 'row-bot');
-          row.innerHTML = `
-            <td>${idx + 1}</td>                                  <!-- Número -->
-            <td class="editable-name"
-                contenteditable="true"
-                data-chat-id="${chat_id}"
-            >${name || '–'}</td>
-            <td class="phone-cell">${phone}</td>
-            <td>${formatDate(last_response)}</td>
-            <td>${respondedBy}</td>
-            <td>${video_enviado ? yes : no}</td>
-            <td>${confirmado_visto ? yes : no}</td>
-          `;
-          tbody.appendChild(row);
-        });
-
-        filterRows();
+        if (state.editing) return; // no pisar edición en curso
+        const rows = await fetchResponded();
+        renderRows(rows);
+        renderPager();
       } catch (e) {
         console.error('Error cargando chats:', e);
+      } finally {
+        scheduleRefresh();
       }
     }
 
-    // Al salir de la celda editable, guarda el nuevo nombre
-    document.getElementById('chats-body').addEventListener('blur', async e => {
+    function scheduleRefresh() {
+      clearInterval(refreshTimer);
+      refreshTimer = setInterval(() => {
+        if (!state.editing) loadChats();
+      }, state.autoRefreshMs);
+    }
+
+    // ------------------ Eventos UI ------------------
+    const onSearch = debounce(() => {
+      state.q = $('#search').value.trim();
+      state.page = 1;
+      loadChats();
+    }, 350);
+
+    $('#search').addEventListener('input', onSearch);
+    $('#status').addEventListener('change', () => {
+      state.status = $('#status').value;
+      state.page = 1;
+      loadChats();
+    });
+    $('#pageSize').addEventListener('change', () => {
+      state.pageSize = parseInt($('#pageSize').value || '50', 10);
+      state.page = 1;
+      loadChats();
+    });
+
+    $('#prevBtn').addEventListener('click', () => {
+      if (state.page > 1) { state.page--; loadChats(); }
+    });
+    $('#nextBtn').addEventListener('click', () => {
+      const maxPage = Math.max(1, Math.ceil(state.total / state.pageSize));
+      if (state.page < maxPage) { state.page++; loadChats(); }
+    });
+
+    // Edición inline: pausar auto-refresh mientras editas
+    $('#chats-body').addEventListener('focusin', e => {
+      if (e.target.classList.contains('editable-name')) state.editing = true;
+    });
+    $('#chats-body').addEventListener('focusout', e => {
+      if (e.target.classList.contains('editable-name')) state.editing = false;
+    });
+
+    // Guardar nombre al salir de la celda editable
+    $('#chats-body').addEventListener('blur', async e => {
       if (!e.target.classList.contains('editable-name')) return;
       const cell    = e.target;
       const newName = cell.textContent.trim();
@@ -131,15 +253,25 @@
           body: JSON.stringify({ chat_id: chatId, name: newName })
         });
         if (!resp.ok) throw new Error();
+        cell.classList.add('saved-ok');
+        setTimeout(() => cell.classList.remove('saved-ok'), 500);
       } catch {
         alert('No se pudo actualizar el nombre');
       }
     }, true);
 
-    // Inicialización
+    // ------------------ Init ------------------
+    // (opcional) restaurar query de la URL
+    const qs = new URLSearchParams(location.search);
+    state.q        = qs.get('q') || '';
+    state.status   = qs.get('status') || '';
+    state.page     = parseInt(qs.get('page') || '1', 10);
+    state.pageSize = parseInt(qs.get('pageSize') || '50', 10);
+    $('#search').value   = state.q;
+    $('#status').value   = state.status;
+    $('#pageSize').value = String(state.pageSize);
+
     loadChats();
-    document.getElementById('search').addEventListener('input', filterRows);
-    setInterval(loadChats, 15000);
   </script>
 </body>
 </html>

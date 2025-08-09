@@ -1,10 +1,16 @@
 // schedule.js (raíz)
+// Mejoras: idempotencia, TZ real para saludo, watcher para reprogramar al cambiar el Excel.
+// Nota: se mantiene la ruta del Excel tal cual (process.cwd() + 'datos.xlsx') y el parse simple de slots.
+
 import XLSX from 'xlsx';
 import path from 'path';
 import cron from 'node-cron';
 import fs from 'fs';
+import chokidar from 'chokidar';
 
-const EXCEL_PATH = path.join(process.cwd(), 'datos.xlsx');
+const TZ = process.env.TZ || 'America/Bogota';
+const EXCEL_PATH = path.join(process.cwd(), 'datos.xlsx'); // no tocamos esto
+const AHEAD_MIN = 5; // minutos antes del inicio
 
 // Map final: { A: { 'lunes 11 de agosto': { '6:00 a 8:00': 'Tema', ... } }, B: {...} }
 export let scheduleMap = {};
@@ -23,7 +29,6 @@ function capFirst(s) {
 }
 
 function dayOrderKey(k) {
-  // k ej: "lunes 11 de agosto" → toma el primer token
   const d = normalize(k).split(' ')[0];
   const order = ['domingo','lunes','martes','miercoles','jueves','viernes','sabado'];
   const i = order.indexOf(d);
@@ -39,6 +44,33 @@ function makeDayKey(dateObj) {
   return normalize(`${d} ${n} de ${m}`);
 }
 
+function weekdayIndex(name) {
+  return ['domingo','lunes','martes','miercoles','jueves','viernes','sabado'].indexOf(normalize(name));
+}
+
+// Hora actual (0-23) en la zona horaria deseada
+function hourInTZ(tz = TZ) {
+  const parts = new Intl.DateTimeFormat('es-CO', { hour: 'numeric', hour12: false, timeZone: tz })
+    .formatToParts(new Date());
+  const h = parseInt(parts.find(p => p.type === 'hour')?.value ?? '0', 10);
+  return Number.isFinite(h) ? h : 0;
+}
+
+function minusMinutes(h, m, delta = AHEAD_MIN) {
+  m -= delta;
+  while (m < 0) { m += 60; h = (h + 23) % 24; }
+  return { h, m };
+}
+
+// Debounce simple para el watcher
+function debounce(fn, ms = 600) {
+  let t = null;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+}
+
 // ------------------------------ carga ------------------------------
 /** Carga TODO el Excel en scheduleMap */
 export function loadSchedule() {
@@ -47,41 +79,46 @@ export function loadSchedule() {
     scheduleMap = {};
     return;
   }
-  const wb = XLSX.readFile(EXCEL_PATH);
-  const map = {};
+  try {
+    const wb = XLSX.readFile(EXCEL_PATH);
+    const map = {};
 
-  wb.SheetNames.forEach(sheetName => {
-    const sh = wb.Sheets[sheetName];
-    const matrix = XLSX.utils.sheet_to_json(sh, { header: 1, defval: '' });
+    wb.SheetNames.forEach(sheetName => {
+      const sh = wb.Sheets[sheetName];
+      const matrix = XLSX.utils.sheet_to_json(sh, { header: 1, defval: '' });
 
-    // fila donde aparezca "Hora"
-    const headerIdx = matrix.findIndex(r => r.some(c => normalize(c) === 'hora'));
-    if (headerIdx < 0) return;
+      // fila donde aparezca "Hora"
+      const headerIdx = matrix.findIndex(r => r.some(c => normalize(c) === 'hora'));
+      if (headerIdx < 0) return;
 
-    const header = matrix[headerIdx];
-    const horaCol = header.findIndex(c => normalize(c) === 'hora');
+      const header = matrix[headerIdx];
+      const horaCol = header.findIndex(c => normalize(c) === 'hora');
 
-    // columnas de días (p.ej. "Lunes 11 de Agosto")
-    const days = header.slice(horaCol + 1).map(normalize).filter(Boolean);
+      // columnas de días (p.ej. "Lunes 11 de Agosto")
+      const days = header.slice(horaCol + 1).map(normalize).filter(Boolean);
 
-    const rows = matrix.slice(headerIdx + 1);
-    const dayMap = {};
+      const rows = matrix.slice(headerIdx + 1);
+      const dayMap = {};
 
-    days.forEach((dayKey, di) => {
-      dayMap[dayKey] = {};
-      rows.forEach(r => {
-        const slot = (r[horaCol] ?? '').toString().trim();
-        if (!slot) return;
-        const subj = (r[horaCol + 1 + di] ?? '').toString().trim();
-        dayMap[dayKey][slot] = subj;
+      days.forEach((dayKey, di) => {
+        dayMap[dayKey] = {};
+        rows.forEach(r => {
+          const slot = (r[horaCol] ?? '').toString().trim();
+          if (!slot) return;
+          const subj = (r[horaCol + 1 + di] ?? '').toString().trim();
+          dayMap[dayKey][slot] = subj;
+        });
       });
+
+      map[sheetName] = dayMap;
     });
 
-    map[sheetName] = dayMap;
-  });
-
-  scheduleMap = map;
-  console.log('📅 [Scheduler] horarios cargados:', Object.keys(scheduleMap));
+    scheduleMap = map;
+    console.log('📅 [Scheduler] horarios cargados:', Object.keys(scheduleMap));
+  } catch (e) {
+    console.error('❌ [Scheduler] error leyendo Excel:', e);
+    scheduleMap = {};
+  }
 }
 
 // ------------------------------ mensaje para el bot ------------------------------
@@ -115,8 +152,7 @@ export function buildScheduleMessage(hintText = '', sheetWanted = null) {
   const allSheets = Object.keys(scheduleMap);
   const sheets = sheetWanted ? [sheetWanted] : allSheets;
 
-  const tz = process.env.TZ || 'America/Bogota';
-  const lines = ['🗓️ *Horario de clases*', `Zona horaria: ${tz}`, ''];
+  const lines = ['🗓️ *Horario de clases*', `Zona horaria: ${TZ}`, ''];
 
   let any = false;
 
@@ -168,13 +204,53 @@ export function buildScheduleMessage(hintText = '', sheetWanted = null) {
  * Programa recordatorios semanales personalizados por grupo
  * @param {import('whatsapp-web.js').Client} client
  * @param {{ A?: string[], B?: string[] }} groupMap 
+ * @param {(res: {sheetName:string,gid:string,dayKey:string,slot:string,subject:string,ok:boolean,error?:string})=>void} onResult
  */
 
-// ⬇️ Reemplaza SOLO esta función en src/utils/schedule.js
-export function startScheduler(client, groupMap, onResult) {
-  loadSchedule();
+// Registro y limpieza de cron jobs activos
+const _jobs = new Set();
+let _watcher = null;
 
-  Object.entries(groupMap).forEach(([sheetName, ids]) => {
+function _clearJobs() {
+  for (const j of _jobs) {
+    try { j.stop(); } catch {}
+  }
+  _jobs.clear();
+}
+
+// Debounced reprogram para el watcher
+const _reprogramDebounced = debounce((_client, _map, _cb) => {
+  console.log('🔁 [Scheduler] Reprogramando tras cambios en Excel…');
+  _internalStart(_client, _map, _cb, { fromWatcher: true });
+}, 800);
+
+function _setupWatcher(client, groupMap, onResult) {
+  if (process.env.SCHEDULE_WATCH === '0') {
+    if (_watcher) { try { _watcher.close(); } catch {} _watcher = null; }
+    return;
+  }
+  if (_watcher) return; // ya corriendo
+
+  try {
+    _watcher = chokidar.watch(EXCEL_PATH, { ignoreInitial: true });
+    _watcher
+      .on('change', () => {
+        console.log('📄 [Scheduler] Excel cambió:', EXCEL_PATH);
+        _reprogramDebounced(client, groupMap, onResult);
+      })
+      .on('error', (e) => console.warn('⚠️ [Scheduler] watcher error:', e));
+    console.log('👀 [Scheduler] observando cambios en Excel:', EXCEL_PATH);
+  } catch (e) {
+    console.warn('⚠️ [Scheduler] no se pudo iniciar watcher:', e);
+  }
+}
+
+function _internalStart(client, groupMap, onResult, { fromWatcher = false } = {}) {
+  loadSchedule();
+  _clearJobs(); // idempotencia
+
+  const groups = groupMap || {};
+  Object.entries(groups).forEach(([sheetName, ids]) => {
     const dayMap = scheduleMap[sheetName];
     if (!dayMap) {
       console.warn(`⚠️ [Scheduler] no hay hoja "${sheetName}" en Excel`);
@@ -184,39 +260,62 @@ export function startScheduler(client, groupMap, onResult) {
 
     Object.entries(dayMap).forEach(([dayKey, slots]) => {
       const weekdayName = normalize(dayKey).split(' ')[0];
-      const idx = ['domingo','lunes','martes','miercoles','jueves','viernes','sabado'].indexOf(weekdayName);
+      const idx = weekdayIndex(weekdayName);
       if (idx < 0) return;
 
       Object.entries(slots).forEach(([slot, subject]) => {
-        if (!subject) return;
+        if (!String(subject).trim()) return;
 
-        // parseo “6:00 a 8:00” y programo 5 min antes
-        const [start] = slot.split(/\s*a\s*/i);
-        let [h, m] = start.split(':').map(n => parseInt(n, 10));
+        // Parse simple: "6:00 a 8:00" → usa la hora de inicio
+        const [start] = String(slot).split(/\s*a\s*/i);
+        let [h, m] = String(start).split(':').map(n => parseInt(n, 10));
         if (Number.isNaN(h) || Number.isNaN(m)) return;
         if (h === 24) h = 0;
-        m -= 5;
-        if (m < 0) { m += 60; h = (h + 23) % 24; }
+        ({ h, m } = minusMinutes(h, m, AHEAD_MIN));
 
         const cronExpr = `${m} ${h} * * ${idx}`;
-        cron.schedule(cronExpr, async () => {
-          const hour = new Date().getHours();
-          const greeting = hour < 12 ? 'buenos días' : hour < 18 ? 'buenas tardes' : 'buenas noches';
-          const msg = `Muy ${greeting} para todos nuestros futuros Subintendentes,\n`
-                    + `en un momento podrán ingresar a su clase de "${subject}".\n`
-                    + `¡Importante no faltar!`;
 
-          for (const gid of ids) {
-            try {
-              await client.sendMessage(gid, msg);
-              onResult?.({ sheetName, gid, dayKey, slot, subject, ok: true, error: null });
-            } catch (e) {
-              console.error(`❌ [Scheduler][${sheetName}] error al enviar a ${gid}:`, e);
-              onResult?.({ sheetName, gid, dayKey, slot, subject, ok: false, error: String(e) });
+        const job = cron.schedule(cronExpr, async () => {
+          try {
+            const hour = hourInTZ(TZ); // hora real en TZ
+            const greeting = hour < 12 ? 'buenos días' : hour < 18 ? 'buenas tardes' : 'buenas noches';
+            const msg = `Muy ${greeting} para todos nuestros futuros Subintendentes,\n`
+                      + `en un momento podrán ingresar a su clase de "${subject}".\n`
+                      + `¡Importante no faltar!`;
+
+            for (const gid of ids) {
+              try {
+                await client.sendMessage(gid, msg);
+                onResult?.({ sheetName, gid, dayKey, slot, subject, ok: true, error: null });
+              } catch (e) {
+                console.error(`❌ [Scheduler][${sheetName}] error al enviar a ${gid}:`, e);
+                onResult?.({ sheetName, gid, dayKey, slot, subject, ok: false, error: String(e) });
+              }
             }
+          } catch (e) {
+            console.error(`[scheduler] fallo en tarea ${sheetName} ${dayKey} ${slot}:`, e);
           }
-        }, { timezone: process.env.TZ || 'America/Bogota' });
+        }, { timezone: TZ });
+
+        _jobs.add(job);
       });
     });
   });
+
+  console.log(`[scheduler] ${_jobs.size} tareas programadas. TZ=${TZ}` + (fromWatcher ? ' (reload)' : ''));
+}
+
+// API pública
+export function startScheduler(client, groupMap, onResult) {
+  _internalStart(client, groupMap, onResult, { fromWatcher: false });
+  _setupWatcher(client, groupMap, onResult);
+}
+
+export function stopScheduler() {
+  _clearJobs();
+  if (_watcher) {
+    try { _watcher.close(); } catch {}
+    _watcher = null;
+  }
+  console.log('[scheduler] detenido');
 }
