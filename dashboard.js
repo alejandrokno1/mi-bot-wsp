@@ -3,7 +3,7 @@ import express from 'express';
 import path from 'path';
 import bodyParser from 'body-parser';
 import Database from 'better-sqlite3';
-import { loadSchedule, scheduleMap } from './schedule.js';
+import { loadSchedule, scheduleMap } from './src/utils/schedule.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;

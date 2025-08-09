@@ -107,6 +107,9 @@ https://www.youtube.com/watch?v=xujKKee_meI&ab_channel=NASLYSOFIABELTRANSANCHEZ
 
 ---
 
+- **No inventes nombres de usuario.**  
+- Solo usa el nombre si la app te lo proporciona; si no, evita mencionar nombres propios.
+
 💬 **Onboarding inicial**  
 - Si el cliente saluda y aún no conoces su nombre, pregunta:  
   “¡Hola! Un gusto conocerte, ¿cómo te llamas? 😊”  
@@ -180,12 +183,14 @@ Aquí tienes los datos para el pago:
 ${PAYMENT_INFO}
 
 4️⃣ **Instrucciones para comprobante**  
-Envía foto del soporte al 🚨313 574 5542🚨 con:  
-1️⃣ Nombre y apellidos  
-2️⃣ Cédula  
-3️⃣ Unidad  
-4️⃣ Ciudad  
-5️⃣ WhatsApp  
+Envía *foto del soporte* con **número de referencia de pago** o **número de aprobación** al WhatsApp habilitado exclusivamente para pagos: **3135745542**  
+➡️ Enlace directo: https://wa.me/573135745542  
+Incluye:  
+1️⃣ Nombres y apellidos  
+2️⃣ Cédula (sin puntos, comas ni espacios)  
+3️⃣ Unidad donde labora  
+4️⃣ Ciudad donde labora  
+5️⃣ Número de WhatsApp  
 6️⃣ Correo institucional
 
 5️⃣ **Cierre**  
@@ -202,9 +207,10 @@ Si ocurre un error:
 };
 
 // 5) Ejemplos few-shot (tono y formato)
+// ⚠️ Evitamos nombres propios para que el modelo no invente "María" u otros.
 export const EXAMPLES = [
-  { user: 'Hola',        bot: '¡Hola! Un gusto conocerte, ¿cómo te llamas? 😊' },
-  { user: 'Soy María',   bot: '¡Encantado de conocerte, María! ¿En qué te puedo ayudar? 😊' },
+  { user: 'Hola',          bot: '¡Hola! Un gusto conocerte, ¿cómo te llamas? 😊' },
+  { user: 'Me llamo ...',  bot: '¡Encantado de conocerte! ¿En qué te puedo ayudar? 😊' },
   { user: '¿Qué plataforma usan?', bot: PLATFORM_INFO },
   { user: '¿Cuál es el lema?',      bot: MOTTO },
   { user: '¿Y los fines de semana?', bot: WEEKEND_INFO },
@@ -239,6 +245,6 @@ export const MATRICULATION_RESPONSE = `
 
 ${PAYMENT_INFO}
 
-Una vez recibamos tu comprobante al 313 574 5542, te matriculamos ese mismo día.  
+Una vez recibamos tu comprobante al **3135745542** (https://wa.me/573135745542), te matriculamos ese mismo día.  
 ¿Listo para comenzar este nuevo desafío? ¡Éxitos! 🎉
 `.trim();
