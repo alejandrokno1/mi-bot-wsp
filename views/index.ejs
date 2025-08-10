@@ -4,25 +4,30 @@
   <meta charset="UTF-8">
   <title>Panel de Control del Bot 📊</title>
   <link rel="stylesheet" href="/static/styles.css">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
 </head>
 <body>
   <div class="container">
     <h1>Panel de Control del Bot 📊</h1>
 
     <div class="card-grid">
-      <!-- Eliminamos Chats Pausados → ahora están dentro de Chats Respondidos -->
+      <!-- Tarjeta: Chats Respondidos -->
       <a class="card" href="/responded">
         <span class="icon">✅</span>
-        Chats Respondidos
+        <span class="title">Chats Respondidos</span>
       </a>
 
-      <!-- Mantenemos Horario de Clases -->
+      <!-- Tarjeta: Horario de Clases -->
       <a class="card" href="/schedule">
         <span class="icon">📅</span>
-        Horario de Clases
+        <span class="title">Horario de Clases</span>
       </a>
 
-      <!-- Eliminamos Estado del Tutorial → integrado en Chats Respondidos -->
+      <!-- Tarjeta: Configuración del Bot -->
+      <a class="card" href="/bot-config">
+        <span class="icon">⚙️</span>
+        <span class="title">Configuración del Bot</span>
+      </a>
     </div>
 
     <footer>

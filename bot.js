@@ -20,7 +20,18 @@ import {
   BASE_SYSTEM_PROMPT,
   EXAMPLES,
   MATRICULATION_RESPONSE,
-  PAYMENT_INFO
+  PAYMENT_INFO,
+
+  // Contexto ampliado
+  KEYWORDS,
+  ASK_WHICH_PROF,
+  formatProfNumberResponse,
+
+  QUICK,
+  getPlatformStatusMessage,
+  applyAdminCommand,
+  OUTAGES,
+  setOutage
 } from './contextoBot.js';
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -51,9 +62,7 @@ db.exec(`
     ok         INTEGER,
     error      TEXT
   );
-
-  -- 👇 Estas dos garantizan que el bot pueda leer settings/ventanas aunque el dashboard no se haya abierto
-  CREATE TABLE IF NOT EXISTS settings (
+  CREATE TABLE IF NOT EXISTS settings (  -- clave-valor simple (string/JSON)
     key   TEXT PRIMARY KEY,
     value TEXT
   );
@@ -68,7 +77,7 @@ const pausedChats = new Set(
   db.prepare('SELECT chat_id FROM paused_chats').all().map(r => r.chat_id)
 );
 
-// --------- Apagado suave: settings + ventanas + helper horario ---------
+// --------- Helpers de settings + ventanas ---------
 function readAllSettings() {
   const rows = db.prepare('SELECT key,value FROM settings').all();
   const out = {};
@@ -80,6 +89,13 @@ function readAllSettings() {
     }
   }
   return out;
+}
+function writeSetting(key, valueObjOrString) {
+  const value = typeof valueObjOrString === 'string'
+    ? valueObjOrString
+    : JSON.stringify(valueObjOrString);
+  db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
+    .run(key, value);
 }
 function readWindows() {
   return db.prepare('SELECT dow, start, end, enabled FROM bot_windows ORDER BY dow').all();
@@ -104,7 +120,7 @@ function getNowInTZ(tz = 'America/Bogota') {
     weekday: 'short', hour: '2-digit', minute: '2-digit'
   }).formatToParts(new Date());
   const get = n => parts.find(p => p.type === n)?.value;
-  const w = (get('weekday') || 'sun').toLowerCase(); // sun..sat
+  const w = (get('weekday') || 'sun').toLowerCase();
   const map = { sun:0, mon:1, tue:2, wed:3, thu:4, fri:5, sat:6 };
   const dow = map[w] ?? 0;
   const hour = parseInt(get('hour') || '0', 10);
@@ -121,17 +137,71 @@ function isWithinWorkingHours(dow, hour, minute, windows) {
   for (const w of dayRows) {
     const start = (w.start || '00:00').slice(0,5);
     const end   = (w.end   || '00:00').slice(0,5);
-
-    // Caso simple (no cruza medianoche): start <= now < end
     if (start <= end) {
       if (start <= nowHM && nowHM < end) return true;
     } else {
-      // Cruza medianoche (ej 22:00-02:00): now >= start OR now < end
       if (nowHM >= start || nowHM < end) return true;
     }
   }
   return false;
 }
+
+// ===== Persistir / restaurar estado de plataforma =====
+function saveOutagesToDB() {
+  writeSetting('outage_q10',  { active: OUTAGES.q10.active,  note: OUTAGES.q10.note  });
+  writeSetting('outage_zoom', { active: OUTAGES.zoom.active, note: OUTAGES.zoom.note });
+}
+function restoreOutagesFromDB() {
+  const s = getConfig(true).settings;
+  if (s.outage_q10) {
+    try { setOutage('q10',  !!s.outage_q10.active,  s.outage_q10.note  || undefined); } catch {}
+  }
+  if (s.outage_zoom) {
+    try { setOutage('zoom', !!s.outage_zoom.active, s.outage_zoom.note || undefined); } catch {}
+  }
+}
+
+// ===== Broadcast (a todos los grupos de BROADCAST_GROUP_IDS) =====
+// ===== Broadcast (a todos los grupos definidos en config/groups.json) =====
+function loadBroadcastGroups() {
+  try {
+    const p = path.join(process.cwd(), 'config', 'groups.json');
+    const j = JSON.parse(fs.readFileSync(p, 'utf8')); // { A:[...], B:[...], ... }
+
+    // Unimos todas las listas (A, B, etc.)
+    const all = Object.values(j || {}).flat().map(s => String(s).trim()).filter(Boolean);
+
+    // Normalizamos: forzamos @g.us y quitamos duplicados
+    const unique = Array.from(new Set(all.map(id => id.endsWith('@g.us') ? id : `${id}@g.us`)));
+
+    if (!unique.length) {
+      console.warn('Broadcast: config/groups.json no contiene IDs de grupos.');
+    }
+    return unique;
+  } catch (e) {
+    console.warn('Broadcast: no pude leer config/groups.json:', e?.message || e);
+    return [];
+  }
+}
+
+async function broadcastToGroups(text, opts = {}) {
+  const groups = loadBroadcastGroups();
+  if (!groups.length) {
+    console.warn('Broadcast: no hay grupos configurados en config/groups.json.');
+    return;
+  }
+
+  for (const gid of groups) {
+    try {
+      await sendHumanTo(gid, text, opts);
+      await sleep(400 + Math.random() * 600);
+    } catch (e) {
+      console.warn('Broadcast falló', gid, e?.message || e);
+    }
+  }
+}
+
+
 
 ////////////////////////////////////////////////////////////////////////////////
 // 1️⃣  Cliente WhatsApp & OpenAI
@@ -144,17 +214,22 @@ const client = new Client({
   }
 });
 
-
-
-
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY || '' });
 const history = new Map();
 const ADMIN = process.env.ADMIN_WAID; // ej: 57XXXXXXXXXX@c.us
+
+// Admin numbers para comandos (E.164) — opcional si usas ADMIN_WAID
+const ADMIN_NUMBERS = (process.env.ADMIN_NUMBERS || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
 
 // Elección A/B temporal (con timeout)
 const pendingScheduleChoice = new Map(); // chatId -> { hint, timer }
 // Confirmación de pago (SI/NO) cuando es ambiguo
 const pendingPaymentConfirm = new Map(); // chatId -> timeoutId
+// Espera de nombre de profesor
+const awaitingProf = new Map(); // chatId -> true
 
 // --- IPC helper para reportar estado al dashboard ---
 function report(type, data = {}) {
@@ -167,7 +242,6 @@ process.on('message', async (m) => {
   if (m.type === 'logout') {
     try { await client.logout(); } catch (e) { console.warn('logout() falló:', e?.message || e); }
     try { await client.destroy(); } catch {}
-    // informar al dashboard que quedamos sin sesión: pedirá QR al reiniciar
     report('status', { connected:false, ready:false, needsQR:true, qr:null });
     try { if (process.send) process.send({ type:'logout_ok' }); } catch {}
   }
@@ -180,8 +254,8 @@ report('status', { started: true, connected: false, ready: false, needsQR: false
 // 2️⃣  Eventos de sesión (QR / auth / ready / desconexión)
 ////////////////////////////////////////////////////////////////////////////////
 client.on('qr', (qr) => {
-  qrcode.generate(qr, { small: true }); // consola
-  console.log('🔑 QR recibido. Puedes escanearlo también desde la página de configuración.');
+  qrcode.generate(qr, { small: true });
+  console.log('🔑 QR recibido.');
   report('qr', qr);
   report('status', { needsQR: true, connected: false, ready: false });
 });
@@ -197,7 +271,10 @@ client.on('ready', () => {
   report('ready');
   report('status', { connected: true, ready: true, needsQR: false, qr: null });
 
-  // Scheduler: leer IDs desde config y registrar logs
+  // Restaurar estado de plataforma desde DB
+  restoreOutagesFromDB();
+
+  // Scheduler
   try {
     const groups = JSON.parse(fs.readFileSync('config/groups.json', 'utf8'));
     const stmt = db.prepare(`
@@ -255,10 +332,9 @@ function enqueueSend(fn) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
-
 function typingDelayFor(text = '') {
   const base = rand(500, 1200);
-  const perChar = Math.min(2000, text.length * 15); // 15ms/char, tope 2s
+  const perChar = Math.min(2000, text.length * 15);
   return base + perChar;
 }
 
@@ -298,6 +374,25 @@ function detectGroupFromText(t) {
   return m ? m[3].toUpperCase() : null;
 }
 
+// Normalizar WA number tipo "57xxxx@c.us" -> "+57xxxxxxxxxx"
+function normalizedFrom(msgFrom) {
+  const digits = String(msgFrom).replace(/\D+/g, '');
+  if (!digits) return '';
+  return digits.startsWith('57') ? `+${digits}` : `+57${digits}`;
+}
+function isAdminSender(msg) {
+  if (ADMIN && msg.from === ADMIN) return true;
+  const norm = normalizedFrom(msg.from);
+  return ADMIN_NUMBERS.includes(norm);
+}
+
+// ===== Detección robusta de consultas de estado =====
+function matchesStatusQuery(raw) {
+  const serviceRx = /(q10|zoom|plataforma)/i;
+  const stateRx   = /(estado|ca[ií]d[ao]|intermitente|no\s*func|funciona|status)/i;
+  return serviceRx.test(raw) && stateRx.test(raw);
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // 4️⃣  Manejador de mensajes
 ////////////////////////////////////////////////////////////////////////////////
@@ -315,6 +410,57 @@ client.on('message', async msg => {
       return;
     }
 
+    // ===============  A. COMANDOS ADMIN  ===============
+    if (isAdminSender(msg) && text.startsWith('/')) {
+
+      // 1) Aviso masivo libre: /aviso <mensaje>
+      if (/^\/aviso\b/i.test(text)) {
+        const payload = raw.replace(/^\/aviso\s*/i, '').trim();
+        if (!payload) {
+          await replyHuman(msg, 'Uso: */aviso* <mensaje para enviar a todos los grupos>');
+          return;
+        }
+        const aviso = [
+          '📢 *Aviso importante*',
+          payload
+        ].join('\n');
+        await broadcastToGroups(aviso);
+        await replyHuman(msg, '✅ Aviso enviado a los grupos configurados.');
+        return;
+      }
+
+      // 2) Comandos de estado (/status, /estado, /q10, /zoom, /plataforma ...)
+      const res = applyAdminCommand(raw, true);
+      if (res.matched) {
+        // persistimos cuando NO es consulta
+        if (!/^\/(status|estado)\b/i.test(text)) {
+          saveOutagesToDB();
+        }
+
+        await replyHuman(msg, res.reply || '✅ Comando aplicado.');
+
+        // Broadcast cuando hay incidencias o normalización
+        if (/^\/plataforma presenta inconvenientes/i.test(text) || /^\/q10 down/i.test(text) || /^\/zoom down/i.test(text)) {
+          const banner = getPlatformStatusMessage();
+          const aviso = [
+            '⚠️ *Aviso importante*',
+            'Estamos realizando *actualizaciones* en la plataforma (Q10/Zoom).',
+            'El servicio puede estar *intermitente*. Les informaremos cuando se normalicen los procesos.',
+            '',
+            banner
+          ].join('\n');
+          await broadcastToGroups(aviso);
+        }
+
+        if (/^\/plataforma funcionando correctamente/i.test(text)) {
+          const okMsg = '✅ *Actualización*: Plataforma *operativa*. Q10 y Zoom funcionando correctamente.';
+          await broadcastToGroups(okMsg);
+        }
+        return;
+      }
+      // Si es admin pero el comando no matchea, seguimos flujo normal
+    }
+
     // Pausar / reanudar IA
     if (text === '/humano') {
       pausedChats.add(chatId);
@@ -330,7 +476,7 @@ client.on('message', async msg => {
     // Ignorar grupos y chats pausados
     if (msg.from.endsWith('@g.us') || pausedChats.has(chatId)) return;
 
-    // Opt-out: detener mensajes
+    // Opt-out
     if (/^\s*(stop|baja|parar|cancelar|no\s+molestar|no\s+enviar|no\s+(?:mas|más))\s*$/i.test(text)) {
       pausedChats.add(chatId);
       db.prepare('INSERT OR IGNORE INTO paused_chats(chat_id) VALUES (?)').run(chatId);
@@ -344,7 +490,6 @@ client.on('message', async msg => {
     const tz = settings.bot_tz || 'America/Bogota';
 
     if (softEnabled) {
-      // Permite que el ADMIN siempre pase (para pruebas fuera de horario)
       const isAdmin = ADMIN && chatId === ADMIN;
       if (!isAdmin) {
         const now = getNowInTZ(tz);
@@ -359,7 +504,7 @@ client.on('message', async msg => {
       }
     }
 
-    // Leer userRow al inicio y reutilizarlo en todo el handler
+    // Leer userRow
     let userRow = db.prepare('SELECT name, group_pref FROM users WHERE chat_id = ?').get(chatId);
 
     // ───────── Confirmación pendiente de pago (SI/NO) ─────────
@@ -375,7 +520,6 @@ client.on('message', async msg => {
       if (/^\s*(no|n|negativo)\s*$/i.test(text)) {
         clearTimeout(pendPay);
         pendingPaymentConfirm.delete(chatId);
-        // seguimos flujo normal
       } else {
         await replyHuman(msg, '¿Es el comprobante de pago de la mensualidad? Responde *SI* o *NO*.');
         return;
@@ -395,7 +539,7 @@ client.on('message', async msg => {
     }
     if (decision === 'ask') {
       await replyHuman(msg, '¿Es el comprobante de pago de la mensualidad? Responde *SI* o *NO*.');
-      const tId = setTimeout(() => pendingPaymentConfirm.delete(chatId), 120000); // 2 min
+      const tId = setTimeout(() => pendingPaymentConfirm.delete(chatId), 120000);
       pendingPaymentConfirm.set(chatId, tId);
       return;
     }
@@ -409,7 +553,6 @@ client.on('message', async msg => {
         pendingScheduleChoice.delete(chatId);
         db.prepare('UPDATE users SET group_pref = ? WHERE chat_id = ?').run(g, chatId);
         userRow = userRow ? { ...userRow, group_pref: g } : { name: null, group_pref: g };
-
         await replyHuman(msg, buildScheduleMessage(pend.hint, g));
         recordResponse(chatId);
         return;
@@ -419,31 +562,74 @@ client.on('message', async msg => {
       }
     }
 
+    // ===============  B. INTENCIONES RÁPIDAS (antes de IA)  ===============
+    // Estado de plataforma (Q10/Zoom)
+    if (matchesStatusQuery(raw)) {
+      await replyHuman(msg, getPlatformStatusMessage());
+      recordResponse(chatId);
+      return;
+    }
+
+    // Número de profesor
+    if (KEYWORDS.numeroProfe.some(rx => rx.test(raw))) {
+      awaitingProf.set(chatId, true);
+      await replyHuman(msg, ASK_WHICH_PROF);
+      recordResponse(chatId);
+      return;
+    }
+    if (awaitingProf.get(chatId)) {
+      awaitingProf.delete(chatId);
+      await replyHuman(msg, formatProfNumberResponse(text));
+      recordResponse(chatId);
+      return;
+    }
+
+    // Grabaciones / En vivo / Zoom error / Pagos / Matrícula
+    if (KEYWORDS.grabadas.some(rx => rx.test(raw))) {
+      await replyHuman(msg, QUICK.q10Rec);
+      recordResponse(chatId);
+      return;
+    }
+    if (KEYWORDS.vivo.some(rx => rx.test(raw))) {
+      await replyHuman(msg, QUICK.q10Live);
+      recordResponse(chatId);
+      return;
+    }
+    if (KEYWORDS.zoomError.some(rx => rx.test(raw))) {
+      await replyHuman(msg, QUICK.zoomFix);
+      recordResponse(chatId);
+      return;
+    }
+    if (KEYWORDS.pagos.some(rx => rx.test(raw))) {
+      await replyHuman(msg, PAYMENT_INFO);
+      recordResponse(chatId);
+      return;
+    }
+    if (KEYWORDS.matricula.some(rx => rx.test(raw))) {
+      await replyHuman(msg, MATRICULATION_RESPONSE);
+      recordResponse(chatId);
+      return;
+    }
+
     // ───── Clasificación (horario / groserías / crisis) ─────
     const cat = classify(raw);
 
-    // Horario: pedir A/B si no viene en el texto
+    // Horario
     if (cat === 'SCHEDULE') {
       const g = detectGroupFromText(text);
-
       if (g === 'A' || g === 'B') {
         await replyHuman(msg, buildScheduleMessage(msg.body, g));
         recordResponse(chatId);
         return;
       }
-
-      // Si ya tiene preferencia guardada, úsala sin preguntar
       if (userRow?.group_pref === 'A' || userRow?.group_pref === 'B') {
         await replyHuman(msg, buildScheduleMessage(msg.body, userRow.group_pref));
         recordResponse(chatId);
         return;
       }
-
-      // No vino ni está guardada → preguntar y poner timeout (2.5 min)
       const timer = setTimeout(() => {
         pendingScheduleChoice.delete(chatId);
       }, 150000);
-
       pendingScheduleChoice.set(chatId, { hint: msg.body, timer });
       await replyHuman(msg, '¿Quieres el *horario del Grupo A* o del *Grupo B*? (responde A o B)');
       recordResponse(chatId);
@@ -456,14 +642,12 @@ client.on('message', async msg => {
         ? 'Te vamos a comunicar con un asesor humano. Si es una emergencia, por favor contacta a servicios de emergencia locales.'
         : 'Te vamos a comunicar con un asesor humano para continuar la conversación.';
       await replyHuman(msg, '🤝 ' + userMsg);
-
       if (ADMIN) {
         await sendHumanTo(
           ADMIN,
           `⚠️ *Escalado ${cat}*\nDe: ${msg.from}\nMensaje: "${raw}"`
         );
       }
-
       recordResponse(chatId);
       return;
     }
@@ -506,9 +690,9 @@ client.on('message', async msg => {
         db.prepare('INSERT INTO tutorial_done(chat_id) VALUES (?)').run(chatId);
       } else {
         await replyHuman(msg,
-          'Este video resume todos los aspectos importantes de la capacitación. 🎥\n' +
+          'Este video resume la capacitación. 🎥\n' +
           'https://www.youtube.com/watch?v=xujKKee_meI&ab_channel=NASLYSOFIABELTRANSANCHEZ\n' +
-          'Por favor, míralo completo y dime si tienes dudas.'
+          'Míralo y me dices si te quedan dudas.'
         );
         db.prepare('INSERT INTO tutorial_done(chat_id) VALUES (?)').run(chatId);
         return;
@@ -565,7 +749,7 @@ client.on('message', async msg => {
       }
     }
 
-    // Flujo IA (few-shot)
+    // ================= IA (few-shot) =================
     const userText = (msg.body || '').trim();
     if (!history.has(chatId)) history.set(chatId, [ BASE_SYSTEM_PROMPT ]);
     const convo = history.get(chatId);

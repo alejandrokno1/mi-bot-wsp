@@ -1,194 +1,164 @@
-<!-- views/bot-config.ejs -->
 <!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
   <title>Configuración del Bot</title>
-  <link rel="stylesheet" href="/static/styles.css" />
-  <style>
-    .grid{display:grid;gap:1rem}
-    .grid-2{grid-template-columns:1fr 1fr}
-    .card{border:1px solid #eee;border-radius:10px;padding:1rem;background:#fff}
-    .row{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
-    .muted{color:#666;font-size:.9rem}
-    .pill{padding:.2rem .5rem;border-radius:9999px;background:#f3f4f6;border:1px solid #e5e7eb}
-
-    textarea{width:100%;min-height:200px;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace}
-    table{width:100%;border-collapse:collapse}
-    th,td{padding:.5rem .6rem;border-bottom:1px solid #eee}
-    input[type="time"]{padding:.3rem .4rem}
-    input[type="checkbox"]{transform:scale(1.2)}
-
-    .qr-box{display:flex;align-items:center;justify-content:center;min-height:280px;border:1px dashed #ddd;border-radius:12px;background:#fafafa;text-align:center}
-
-    /* Botones */
-    .btn{padding:.5rem .8rem;border:1px solid #d1d5db;border-radius:8px;cursor:pointer;background:#f8fafc;color:#111827;transition:filter .15s ease,background .15s ease}
-    .btn:hover{filter:brightness(.96)}
-    .btn:disabled{opacity:.55;cursor:default}
-    .btn-primary{background:#16a34a;border-color:#15803d;color:#fff}
-    .btn-primary:hover{background:#15803d}
-    .btn-danger{background:#dc2626;border-color:#b91c1c;color:#fff}
-    .btn-danger:hover{background:#b91c1c}
-    .btn-warning{background:#f59e0b;border-color:#d97706;color:#111827}
-    .btn-warning:hover{background:#d97706;color:#fff}
-  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <!-- cache-busting opcional con ?v=4 -->
+  <link rel="stylesheet" href="/static/styles.css?v=4" />
 </head>
-<body>
+<body class="admin">
   <div class="container">
     <h1>Configuración del Bot</h1>
     <p><a href="/">← Volver al menú</a></p>
 
+    <!-- ====== 2 columnas ====== -->
     <div class="grid grid-2">
-      <!-- Estado y control -->
-      <div class="card">
-        <h2>Estado</h2>
-        <div id="statusLine" class="muted">Cargando…</div>
+      <!-- === Columna Izquierda: Estado === -->
+      <section class="card" aria-labelledby="estado-title">
+        <h2 id="estado-title">Estado</h2>
 
-        <div class="row" style="margin-top:.5rem">
+        <div class="status-bar">
+          <div id="statusLine" class="muted" role="status" aria-live="polite">Cargando…</div>
+          <div class="status-pills">
+            <span id="pid" class="pill">PID –</span>
+            <span id="uptime" class="pill">Uptime 00:00:00</span>
+          </div>
+        </div>
+
+        <div class="row btn-row">
           <button id="startBtn"   class="btn btn-primary">Iniciar</button>
           <button id="stopBtn"    class="btn btn-danger">Detener</button>
           <button id="restartBtn" class="btn btn-warning">Reiniciar</button>
           <button id="logoutBtn"  class="btn btn-danger" title="Cierra sesión y pedirá QR">Cerrar sesión</button>
-
-          <span id="pid" class="pill">PID –</span>
-          <span id="uptime" class="pill">Uptime 00:00:00</span>
         </div>
 
-        <h3 style="margin-top:1rem">QR de vinculación</h3>
+        <h3>QR de vinculación</h3>
         <div id="qrBox" class="qr-box">No se requiere QR (ya conectado).</div>
-      </div>
+      </section>
 
-      <!-- Apagado suave -->
-      <div class="card">
-        <h2>Apagado suave (horarios)</h2>
-        <div class="row">
-          <label><input type="checkbox" id="softEnabled"> Activar apagado suave</label>
-          <label>Zona horaria: <input type="text" id="tz" placeholder="America/Bogota" style="margin-left:.3rem"></label>
+      <!-- === Columna Derecha: Apagado suave === -->
+      <section class="card" aria-labelledby="apagado-title">
+        <h2 id="apagado-title">Apagado suave (horarios)</h2>
+
+        <div class="row controls-stack">
+          <label class="checkbox-line">
+            <input type="checkbox" id="softEnabled"> Activar apagado suave
+          </label>
+
+          <label class="tz-line">
+            Zona horaria:
+            <input type="text" id="tz" placeholder="America/Bogota" inputmode="text" autocomplete="off" />
+          </label>
         </div>
-        <p class="muted">Define las ventanas por día (0=Dom … 6=Sáb). Deja desactivado para cerrar ese día.</p>
 
-        <table>
-          <thead><tr><th>Día</th><th>Habilitado</th><th>Inicio</th><th>Fin</th></tr></thead>
-          <tbody id="winBody"></tbody>
-        </table>
+        <p class="muted help">
+          Define las ventanas por día (0=Dom … 6=Sáb). Deja desactivado para cerrar ese día.
+        </p>
 
-        <div class="row" style="margin-top:.5rem">
+        <div class="actions">
           <button id="saveWindows" class="btn">Guardar horarios</button>
-          <span id="saveWinMsg" class="muted"></span>
+          <span id="saveWinMsg" class="muted" role="status" aria-live="polite"></span>
         </div>
-      </div>
+
+        <div class="table-scroll">
+          <table aria-label="Ventanas horarias">
+            <thead>
+              <tr><th>Día</th><th class="center">Habilitado</th><th>Inicio</th><th>Fin</th></tr>
+            </thead>
+            <tbody id="winBody"></tbody>
+          </table>
+        </div>
+      </section>
     </div>
 
-    <!-- Contexto -->
-    <div class="card" style="margin-top:1rem">
-      <h2>Contexto del bot</h2>
+    <!-- ====== Contexto a todo el ancho ====== -->
+    <section class="card" aria-labelledby="contexto-title">
+      <h2 id="contexto-title">Contexto del bot</h2>
       <p class="muted">Este texto se usa como contexto/sistema para el bot.</p>
-      <textarea id="context"></textarea>
-      <div class="row" style="margin-top:.5rem">
-        <button id="saveContext" class="btn">Guardar contexto</button>
-        <span id="saveCtxMsg" class="muted"></span>
+
+      <div class="context-grid">
+        <textarea id="context" aria-label="Contexto del bot"></textarea>
+        <div class="actions end">
+          <button id="saveContext" class="btn">Guardar contexto</button>
+          <span id="saveCtxMsg" class="muted" role="status" aria-live="polite"></span>
+        </div>
       </div>
-    </div>
+    </section>
   </div>
 
-  <!-- Cargador seguro de la librería de QR (con fallback de CDN) -->
+  <!-- ===== Librería QR con fallback ===== -->
   <script>
     async function ensureQRCodeLib() {
       if (window.QRCode) return;
-      try {
-        await new Promise((res, rej) => {
-          const s = document.createElement('script');
-          s.src = 'https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js';
-          s.onload = res; s.onerror = rej; document.head.appendChild(s);
-        });
-        if (window.QRCode) return;
-      } catch {}
-      await new Promise((res, rej) => {
-        const s = document.createElement('script');
-        s.src = 'https://unpkg.com/qrcode@1.5.3/build/qrcode.min.js';
+      const load = (src) => new Promise((res, rej) => {
+        const s = document.createElement('script'); s.src = src;
         s.onload = res; s.onerror = rej; document.head.appendChild(s);
       });
+      try { await load('https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js'); }
+      catch { await load('https://unpkg.com/qrcode@1.5.3/build/qrcode.min.js'); }
     }
   </script>
 
-  <!-- Lógica de la página -->
+  <!-- ===== Lógica ===== -->
   <script>
-    const $ = s => document.querySelector(s);
+    const $ = (s) => document.querySelector(s);
     const state = { token: null, polling: null };
-    // Si definiste ADMIN_TOKEN y quieres probar desde el navegador:
-    // state.token = 'TU_TOKEN';
 
-    function headers() {
+    const headers = () => {
       const h = { 'Content-Type': 'application/json' };
       if (state.token) h['x-admin-token'] = state.token;
       return h;
-    }
+    };
 
-    function dowName(i){ return ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'][i] || i; }
-    function fmtUptime(sec){
+    const dowName = (i) => ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'][i] || i;
+    const pad = (n) => String(n).padStart(2, '0');
+    const fmtUptime = (sec) => {
       const s = Number(sec||0), h = Math.floor(s/3600), m = Math.floor((s%3600)/60), r = s%60;
-      const pad = n => String(n).padStart(2,'0'); return `${pad(h)}:${pad(m)}:${pad(r)}`;
-    }
+      return `${pad(h)}:${pad(m)}:${pad(r)}`;
+    };
 
-    async function fetchStatus(){ const r = await fetch('/api/bot/status',   { headers: headers() }); return r.json(); }
-    async function fetchSettings(){const r = await fetch('/api/settings',     { headers: headers() }); return r.json(); }
+    const fetchStatus   = async () => (await fetch('/api/bot/status', { headers: headers() })).json();
+    const fetchSettings = async () => (await fetch('/api/settings',   { headers: headers() })).json();
 
-    // ---- Render principal (incluye QR con múltiples fallbacks) ----
     async function renderStatus(payload){
       const { running, pid, uptimeSec, state: st } = payload;
       $('#pid').textContent = pid ? `PID ${pid}` : 'PID –';
       $('#uptime').textContent = `Uptime ${fmtUptime(uptimeSec)}`;
 
-      let line = '';
+      let line = '⏳ Iniciando…';
       if (!running) line = '⏹️ Bot detenido.';
       else if (st?.ready) line = '🟢 Conectado y listo.';
       else if (st?.connected) line = '🟡 Conectado, preparando…';
       else if (st?.needsQR) line = '🟠 Requiere QR.';
-      else line = '⏳ Iniciando…';
       $('#statusLine').textContent = line;
 
-      // QR
       const box = $('#qrBox');
       if (st?.needsQR && st?.qr) {
         box.innerHTML = '';
         try { await ensureQRCodeLib(); } catch {}
-
         if (window.QRCode) {
-          // 1) IMG (dataURL)
           try {
-            const dataUrl = await QRCode.toDataURL(st.qr, { width: 260, margin: 1, errorCorrectionLevel: 'M' });
-            box.innerHTML = `<img src="${dataUrl}" alt="QR" style="display:block;width:260px;height:260px">`;
-          } catch (e1) {
-            console.warn('QR img falló:', e1);
-            // 2) CANVAS
+            const url = await QRCode.toDataURL(st.qr, { width:260, margin:1, errorCorrectionLevel:'M' });
+            box.innerHTML = `<img src="${url}" alt="Código QR" width="260" height="260">`;
+          } catch {
             try {
               const canvas = document.createElement('canvas');
-              await QRCode.toCanvas(canvas, st.qr, { width: 260, margin: 1, errorCorrectionLevel: 'M' });
+              await QRCode.toCanvas(canvas, st.qr, { width:260, margin:1, errorCorrectionLevel:'M' });
               box.appendChild(canvas);
-            } catch (e2) {
-              console.warn('QR canvas falló:', e2);
-              // 3) SVG
-              try {
-                const svg = await QRCode.toString(st.qr, { type: 'svg', width: 260, margin: 1, errorCorrectionLevel: 'M' });
-                box.innerHTML = svg;
-              } catch (e3) {
-                console.warn('QR svg falló:', e3);
-                // 4) Servicio externo (si no hay librería o falla todo)
-                const url = 'https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=' + encodeURIComponent(st.qr);
-                box.innerHTML = `<img src="${url}" alt="QR" style="display:block;width:260px;height:260px">`;
-              }
+            } catch {
+              const url = 'https://api.qrserver.com/v1/create-qr-code/?size=260x260&data='+encodeURIComponent(st.qr);
+              box.innerHTML = `<img src="${url}" alt="Código QR" width="260" height="260">`;
             }
           }
         } else {
-          // Librería no disponible → servicio externo
-          const url = 'https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=' + encodeURIComponent(st.qr);
-          box.innerHTML = `<img src="${url}" alt="QR" style="display:block;width:260px;height:260px">`;
+          const url = 'https://api.qrserver.com/v1/create-qr-code/?size=260x260&data='+encodeURIComponent(st.qr);
+          box.innerHTML = `<img src="${url}" alt="Código QR" width="260" height="260">`;
         }
       } else {
         box.textContent = 'No se requiere QR (ya conectado).';
       }
 
-      // Botones
       $('#startBtn').disabled = running;
       $('#stopBtn').disabled  = !running;
     }
@@ -200,13 +170,13 @@
       const tbody = $('#winBody'); tbody.innerHTML = '';
       const byDow = {}; windows.forEach(w => { byDow[w.dow] = w; });
 
-      for (let d=0; d<7; d++){
+      for (let d = 0; d < 7; d++){
         const row = byDow[d] || { dow:d, start:'00:00', end:'00:00', enabled:0 };
         const tr = document.createElement('tr');
         tr.dataset.dow = d;
         tr.innerHTML = `
           <td>${dowName(d)}</td>
-          <td><input type="checkbox" ${row.enabled ? 'checked' : ''} data-k="enabled"></td>
+          <td class="center"><input type="checkbox" ${row.enabled ? 'checked' : ''} data-k="enabled"></td>
           <td><input type="time" value="${row.start}" data-k="start"></td>
           <td><input type="time" value="${row.end}"   data-k="end"></td>
         `;
@@ -254,13 +224,15 @@
     };
 
     $('#saveContext').onclick = async ()=>{
-      const text = $('#context').value;
-      await fetch('/api/settings', { method:'POST', headers: headers(), body: JSON.stringify({ bot_context: text }) });
+      await fetch('/api/settings', {
+        method:'POST', headers: headers(),
+        body: JSON.stringify({ bot_context: $('#context').value })
+      });
       $('#saveCtxMsg').textContent = 'Guardado.';
       setTimeout(()=> $('#saveCtxMsg').textContent='', 1500);
     };
 
-    // Estado en vivo
+    // Carga inicial + polling
     loadAll();
     state.polling = setInterval(async ()=>{ try { await renderStatus(await fetchStatus()); } catch {} }, 5000);
   </script>
