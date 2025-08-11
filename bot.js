@@ -9,6 +9,21 @@ import fs from 'fs';
 import path from 'path';
 import Database from 'better-sqlite3';
 
+// ───────────────────────────────────────────────────────────────
+// Rutas persistentes (funciona en Railway y también en local)
+// ───────────────────────────────────────────────────────────────
+const DATA_DIR   = process.env.DATA_DIR   || path.join(process.cwd(), 'data');
+const DB_PATH    = process.env.DB_PATH    || path.join(DATA_DIR, 'bot-data.db');
+const WWEBJS_DIR = process.env.WWEBJS_DIR || path.join(DATA_DIR, '.wwebjs_auth');
+
+// Asegurar que existan los directorios
+try { fs.mkdirSync(DATA_DIR,   { recursive: true }); } catch {}
+try { fs.mkdirSync(WWEBJS_DIR, { recursive: true }); } catch {}
+
+console.log('📦 DATA_DIR  ->', DATA_DIR);
+console.log('🗄️  DB_PATH   ->', DB_PATH);
+console.log('🔐 WWEBJS_DIR ->', WWEBJS_DIR);
+
 // Pagos: detector + mensaje de redirección
 import { detectPaymentIntent, paymentRedirectMessage } from './src/utils/payment.js';
 // Clasificador general (horario / tóxico / crisis)
@@ -21,12 +36,9 @@ import {
   EXAMPLES,
   MATRICULATION_RESPONSE,
   PAYMENT_INFO,
-
-  // Contexto ampliado
   KEYWORDS,
   ASK_WHICH_PROF,
   formatProfNumberResponse,
-
   QUICK,
   getPlatformStatusMessage,
   applyAdminCommand,
@@ -37,7 +49,7 @@ import {
 ////////////////////////////////////////////////////////////////////////////////
 // 0️⃣  Base de datos y tablas
 ////////////////////////////////////////////////////////////////////////////////
-const db = new Database('bot-data.db');
+const db = new Database(DB_PATH);
 db.exec(`
   CREATE TABLE IF NOT EXISTS paused_chats ( chat_id TEXT PRIMARY KEY );
   CREATE TABLE IF NOT EXISTS responded_chats (
@@ -161,22 +173,14 @@ function restoreOutagesFromDB() {
   }
 }
 
-// ===== Broadcast (a todos los grupos de BROADCAST_GROUP_IDS) =====
 // ===== Broadcast (a todos los grupos definidos en config/groups.json) =====
 function loadBroadcastGroups() {
   try {
     const p = path.join(process.cwd(), 'config', 'groups.json');
     const j = JSON.parse(fs.readFileSync(p, 'utf8')); // { A:[...], B:[...], ... }
-
-    // Unimos todas las listas (A, B, etc.)
     const all = Object.values(j || {}).flat().map(s => String(s).trim()).filter(Boolean);
-
-    // Normalizamos: forzamos @g.us y quitamos duplicados
     const unique = Array.from(new Set(all.map(id => id.endsWith('@g.us') ? id : `${id}@g.us`)));
-
-    if (!unique.length) {
-      console.warn('Broadcast: config/groups.json no contiene IDs de grupos.');
-    }
+    if (!unique.length) console.warn('Broadcast: config/groups.json no contiene IDs de grupos.');
     return unique;
   } catch (e) {
     console.warn('Broadcast: no pude leer config/groups.json:', e?.message || e);
@@ -190,7 +194,6 @@ async function broadcastToGroups(text, opts = {}) {
     console.warn('Broadcast: no hay grupos configurados en config/groups.json.');
     return;
   }
-
   for (const gid of groups) {
     try {
       await sendHumanTo(gid, text, opts);
@@ -201,17 +204,33 @@ async function broadcastToGroups(text, opts = {}) {
   }
 }
 
-
-
 ////////////////////////////////////////////////////////////////////////////////
 // 1️⃣  Cliente WhatsApp & OpenAI
 ////////////////////////////////////////////////////////////////////////////////
+// En Railway define PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium.
+// En local NO la definas para usar Chromium/Chrome de Puppeteer.
+const PUPPETEER_EXEC = process.env.PUPPETEER_EXECUTABLE_PATH;
+
+const puppeteerOpts = {
+  headless: true,
+  args: [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-gpu',
+    '--no-zygote'
+  ]
+};
+if (PUPPETEER_EXEC) {
+  puppeteerOpts.executablePath = PUPPETEER_EXEC;
+}
+
 const client = new Client({
-  authStrategy: new LocalAuth({ clientId: 'bot-ia' }),
-  puppeteer: {
-    headless: true,
-    args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu','--no-zygote']
-  }
+  authStrategy: new LocalAuth({
+    clientId: 'bot-ia',
+    dataPath: WWEBJS_DIR
+  }),
+  puppeteer: puppeteerOpts
 });
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY || '' });
@@ -432,14 +451,12 @@ client.on('message', async msg => {
       // 2) Comandos de estado (/status, /estado, /q10, /zoom, /plataforma ...)
       const res = applyAdminCommand(raw, true);
       if (res.matched) {
-        // persistimos cuando NO es consulta
         if (!/^\/(status|estado)\b/i.test(text)) {
           saveOutagesToDB();
         }
 
         await replyHuman(msg, res.reply || '✅ Comando aplicado.');
 
-        // Broadcast cuando hay incidencias o normalización
         if (/^\/plataforma presenta inconvenientes/i.test(text) || /^\/q10 down/i.test(text) || /^\/zoom down/i.test(text)) {
           const banner = getPlatformStatusMessage();
           const aviso = [
@@ -458,7 +475,6 @@ client.on('message', async msg => {
         }
         return;
       }
-      // Si es admin pero el comando no matchea, seguimos flujo normal
     }
 
     // Pausar / reanudar IA
@@ -486,7 +502,12 @@ client.on('message', async msg => {
 
     // ---- Apagado suave (respetar horarios) ----
     const { settings, windows } = getConfig(); // cache ~20s
-    const softEnabled = String(settings.bot_soft_enabled ?? '1') === '1';
+    const softEnabled =
+      settings.bot_soft_enabled === true ||
+      settings.bot_soft_enabled === 1 ||
+      settings.bot_soft_enabled === '1' ||
+      String(settings.bot_soft_enabled).toLowerCase() === 'true';
+
     const tz = settings.bot_tz || 'America/Bogota';
 
     if (softEnabled) {
@@ -563,7 +584,6 @@ client.on('message', async msg => {
     }
 
     // ===============  B. INTENCIONES RÁPIDAS (antes de IA)  ===============
-    // Estado de plataforma (Q10/Zoom)
     if (matchesStatusQuery(raw)) {
       await replyHuman(msg, getPlatformStatusMessage());
       recordResponse(chatId);

@@ -1,6 +1,7 @@
 // dashboard.js
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import Database from 'better-sqlite3';
 import { loadSchedule, scheduleMap } from './src/utils/schedule.js';
 import { fileURLToPath } from 'url';
@@ -24,7 +25,50 @@ const __dirname  = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const db   = new Database('bot-data.db');
+
+// === NUEVO: usar el mismo DB_PATH del bot (con fallback a ./data/bot-data.db)
+const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
+const DB_PATH  = process.env.DB_PATH  || path.join(DATA_DIR, 'bot-data.db');
+fs.mkdirSync(DATA_DIR, { recursive: true });
+
+const db = new Database(DB_PATH);
+
+// === NUEVO: bootstrap de tablas mínimas (mismo esquema que bot.js)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS paused_chats ( chat_id TEXT PRIMARY KEY );
+  CREATE TABLE IF NOT EXISTS responded_chats (
+    chat_id TEXT PRIMARY KEY,
+    last_response TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS tutorial_asked ( chat_id TEXT PRIMARY KEY );
+  CREATE TABLE IF NOT EXISTS tutorial_done  ( chat_id TEXT PRIMARY KEY );
+  CREATE TABLE IF NOT EXISTS users (
+    chat_id    TEXT PRIMARY KEY,
+    name       TEXT,
+    group_pref TEXT
+  );
+  CREATE TABLE IF NOT EXISTS scheduler_logs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    when_ts    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    group_name TEXT,
+    group_id   TEXT,
+    day_key    TEXT,
+    slot       TEXT,
+    subject    TEXT,
+    ok         INTEGER,
+    error      TEXT
+  );
+  CREATE TABLE IF NOT EXISTS settings (  -- clave-valor simple (string/JSON)
+    key   TEXT PRIMARY KEY,
+    value TEXT
+  );
+  CREATE TABLE IF NOT EXISTS bot_windows (
+    dow     INTEGER PRIMARY KEY,  -- 0..6
+    start   TEXT NOT NULL DEFAULT '00:00',
+    end     TEXT NOT NULL DEFAULT '00:00',
+    enabled INTEGER NOT NULL DEFAULT 0
+  );
+`);
 
 // ----------------------------------------
 // Middlewares básicos
@@ -42,7 +86,7 @@ app.use('/static', express.static(path.join(__dirname, 'public'), {
 }));
 
 // ----------------------------------------
-// Carga inicial del horario
+// Carga inicial del horario (schedule.js ya usa EXCEL_PATH/ENV)
 // ----------------------------------------
 loadSchedule();
 

@@ -14,6 +14,19 @@ sessions/
 **/DawnCache/
 **/Cache/
 
+# También si están dentro de /data
+data/.wwebjs_auth/
+data/.wwebjs_cache*/
+
+# =========================
+# Carpeta de datos persistentes (no subir DB, Excel, etc.)
+# =========================
+data/**
+!data/.gitkeep     # crea este archivo vacío si quieres versionar la carpeta sin su contenido
+# Si prefieres listar explícitos en lugar de ignorar toda la carpeta, usa:
+# /data/bot-data.db
+# /data/datos.xlsx
+
 # =========================
 # Bases de datos y archivos locales
 # =========================
@@ -21,7 +34,6 @@ bot-data.db
 *.db
 *.db-journal
 *.sqlite*
-datos.xlsx
 ~$*.xlsx
 tmp_*.ogg
 
@@ -88,9 +100,11 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
 # =========================
-# Config local (mantén ejemplos)
+# Config local
+# (ignoramos todos los JSON en config/, excepto grupos y ejemplos)
 # =========================
 config/*.json
+!config/groups.json
 !config/*.example.json
 !config/README.md
 

@@ -1,6 +1,6 @@
-// schedule.js (raíz)
+// schedule.js
 // Mejoras: idempotencia, TZ real para saludo, watcher para reprogramar al cambiar el Excel.
-// Nota: se mantiene la ruta del Excel tal cual (process.cwd() + 'datos.xlsx') y el parse simple de slots.
+// Ahora el Excel se toma desde DATA_DIR/EXCEL_PATH (persistente).
 
 import XLSX from 'xlsx';
 import path from 'path';
@@ -8,9 +8,18 @@ import cron from 'node-cron';
 import fs from 'fs';
 import chokidar from 'chokidar';
 
+// ───────────────────────────────────────────────────────────────
+// Rutas y parámetros
+// ───────────────────────────────────────────────────────────────
 const TZ = process.env.TZ || 'America/Bogota';
-const EXCEL_PATH = path.join(process.cwd(), 'datos.xlsx'); // no tocamos esto
-const AHEAD_MIN = 5; // minutos antes del inicio
+
+// Carpeta de datos persistentes (compatible con Railway Volume)
+const DATA_DIR   = process.env.DATA_DIR   || path.join(process.cwd(), 'data');
+// Ruta del Excel (puedes sobreescribir con EXCEL_PATH)
+export const EXCEL_PATH = process.env.EXCEL_PATH || path.join(DATA_DIR, 'datos.xlsx');
+
+// Minutos antes del inicio para avisar
+const AHEAD_MIN = Number(process.env.SCHEDULE_AHEAD_MIN || 5);
 
 // Map final: { A: { 'lunes 11 de agosto': { '6:00 a 8:00': 'Tema', ... } }, B: {...} }
 export let scheduleMap = {};
@@ -232,6 +241,7 @@ function _setupWatcher(client, groupMap, onResult) {
   if (_watcher) return; // ya corriendo
 
   try {
+    // vigilar la ruta efectiva del Excel
     _watcher = chokidar.watch(EXCEL_PATH, { ignoreInitial: true });
     _watcher
       .on('change', () => {
