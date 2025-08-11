@@ -291,7 +291,7 @@ function _internalStart(client, groupMap, onResult, { fromWatcher = false } = {}
             const greeting = hour < 12 ? 'buenos días' : hour < 18 ? 'buenas tardes' : 'buenas noches';
             const msg = `Muy ${greeting} para todos nuestros futuros Subintendentes,\n`
                       + `en un momento podrán ingresar a su clase de "${subject}".\n`
-                      + `¡Importante no faltar!`;
+                      + `a través de la plataforma-> https://asesoriasacademicasnaslybeltran.q10.com/`;
 
             for (const gid of ids) {
               try {
