@@ -3,11 +3,31 @@
 import 'dotenv/config';
 import pkg from 'whatsapp-web.js';
 const { Client, LocalAuth } = pkg;
-import qrcode from 'qrcode-terminal';
+import qrcode from 'qrcode-terminal';       // ASCII (útil en local)
+import QRCode from 'qrcode';                // PNG para Railway (/qr)
 import OpenAI from 'openai';
 import fs from 'fs';
 import path from 'path';
 import Database from 'better-sqlite3';
+import express from 'express';
+
+// ───────────────────────────────────────────────────────────────
+// Mini HTTP para healthcheck y mostrar el QR como PNG (/qr)
+// ───────────────────────────────────────────────────────────────
+const app = express();
+const PORT = process.env.PORT || 3000;
+let lastQR = null;
+
+app.get('/', (_req, res) => res.send('Bot OK'));
+app.get('/qr', (_req, res) => {
+  if (!lastQR) return res.status(404).send('Sin QR disponible');
+  res.send(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">
+  <body style="margin:0;background:#0b0b0b;display:grid;place-items:center;height:100vh">
+    <img src="${lastQR}" alt="QR" style="width:min(92vmin,360px);height:min(92vmin,360px);
+      image-rendering:pixelated;background:#fff;padding:12px;border-radius:12px"/>
+  </body>`);
+});
+app.listen(PORT, () => console.log(`🌐 HTTP listo en :${PORT}`));
 
 // ───────────────────────────────────────────────────────────────
 // Rutas persistentes (funciona en Railway y también en local)
@@ -272,8 +292,17 @@ report('status', { started: true, connected: false, ready: false, needsQR: false
 ////////////////////////////////////////////////////////////////////////////////
 // 2️⃣  Eventos de sesión (QR / auth / ready / desconexión)
 ////////////////////////////////////////////////////////////////////////////////
-client.on('qr', (qr) => {
+client.on('qr', async (qr) => {
+  // ASCII para local (sigue sirviendo):
   qrcode.generate(qr, { small: true });
+  // PNG para Railway (/qr):
+  try {
+    lastQR = await QRCode.toDataURL(qr, { margin: 1, scale: 8 });
+    console.log('🔗 Escanea el QR abriendo la ruta /qr de tu app.');
+  } catch (e) {
+    console.warn('QR PNG error:', e?.message || e);
+  }
+
   console.log('🔑 QR recibido.');
   report('qr', qr);
   report('status', { needsQR: true, connected: false, ready: false });
@@ -285,6 +314,7 @@ client.on('authenticated', () => {
 });
 
 client.on('ready', () => {
+  lastQR = null; // deja de mostrar /qr cuando ya está listo
   console.log('Mi WAID:', client.info?.wid?._serialized);
   console.log('💚 WhatsApp Web listo');
   report('ready');

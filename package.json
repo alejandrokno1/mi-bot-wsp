@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "node bot.js",
-     "migrate": "node scripts/migrate.js"
+    "migrate": "node scripts/migrate.js"
   },
   "author": "",
   "license": "ISC",
@@ -18,11 +18,9 @@
     "express": "^5.1.0",
     "node-cron": "^4.2.1",
     "openai": "^5.12.0",
+    "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
     "whatsapp-web.js": "^1.31.0",
     "xlsx": "^0.18.5"
   }
 }
-
-
-
