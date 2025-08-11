@@ -3,9 +3,10 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import Database from 'better-sqlite3';
+import multer from 'multer';                  // ⬅️ nuevo
 import { loadSchedule, scheduleMap } from './src/utils/schedule.js';
 import { fileURLToPath } from 'url';
-import QRCode from 'qrcode'; // ⬅️ nuevo
+import QRCode from 'qrcode';
 
 // Helpers de configuración
 import {
@@ -28,8 +29,9 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // === usar el mismo DB_PATH del bot (con fallback a ./data/bot-data.db)
-const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
-const DB_PATH  = process.env.DB_PATH  || path.join(DATA_DIR, 'bot-data.db');
+const DATA_DIR   = process.env.DATA_DIR   || path.join(process.cwd(), 'data');
+const DB_PATH    = process.env.DB_PATH    || path.join(DATA_DIR, 'bot-data.db');
+const EXCEL_PATH = process.env.EXCEL_PATH || path.join(DATA_DIR, 'datos.xlsx'); // ⬅️ nuevo
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const db = new Database(DB_PATH);
@@ -115,10 +117,8 @@ app.get('/schedule', (req, res) => res.render('schedule', { scheduleMap }));
 // ----------------------------------------
 app.get('/qr.png', async (req, res) => {
   try {
-    const st = getBotStatus();         // botManager debe exponer { needsQR, qr, ... }
-    if (!st?.needsQR || !st?.qr) {
-      return res.status(404).send('No hay QR pendiente.');
-    }
+    const st = getBotStatus(); // botManager expone { needsQR, qr, ... }
+    if (!st?.needsQR || !st?.qr) return res.status(404).send('No hay QR pendiente.');
     const buf = await QRCode.toBuffer(st.qr, { width: 512, margin: 1 });
     res.setHeader('Content-Type', 'image/png');
     res.send(buf);
@@ -146,6 +146,81 @@ app.get('/qr', (req, res) => {
       </body>
     </html>
   `);
+});
+
+// ----------------------------------------
+// 1.2) Subida de Excel (nuevo)
+// ----------------------------------------
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 }, // 15 MB
+  fileFilter: (req, file, cb) => {
+    const ok =
+      /application\/vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet/.test(file.mimetype) ||
+      /application\/vnd\.ms-excel/.test(file.mimetype) ||
+      /\.xlsx?$/i.test(file.originalname);
+    cb(ok ? null : new Error('Formato no permitido. Sube un .xlsx'), ok);
+  }
+});
+
+// Formulario simple
+app.get('/excel', (req, res) => {
+  const exists = fs.existsSync(EXCEL_PATH);
+  const info = exists ? `Archivo actual: ${EXCEL_PATH}` : 'No hay Excel subido aún.';
+  res.send(`<!doctype html>
+  <html lang="es"><head><meta charset="utf-8"><title>Subir Excel</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <style>body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;padding:24px}
+  .box{max-width:520px;margin:auto;border:1px solid #ddd;border-radius:12px;padding:20px}
+  label{display:block;margin:12px 0 6px}input[type=file]{width:100%}
+  button{padding:10px 16px;border:0;border-radius:8px;background:#2563eb;color:#fff;cursor:pointer}
+  .ok{color:#16a34a}.warn{color:#b45309}
+  </style></head><body>
+  <div class="box">
+    <h2>📄 Subir horario (.xlsx)</h2>
+    <p class="${exists ? 'ok' : 'warn'}">${info}</p>
+    <form action="/excel" method="post" enctype="multipart/form-data">
+      <label for="archivo">Selecciona tu archivo Excel (.xlsx)</label>
+      <input id="archivo" name="archivo" type="file" accept=".xlsx" required />
+      <p style="font-size:13px;color:#555">Se guardará en <code>${EXCEL_PATH}</code></p>
+      <button type="submit">Subir y aplicar</button>
+    </form>
+    <p style="margin-top:18px;font-size:13px;color:#666">
+      Si <code>SCHEDULE_WATCH=1</code>, el bot reprograma al detectar cambios. Si está en <code>0</code>,
+      el panel reiniciará el bot al terminar la subida.
+    </p>
+    <p><a href="/">⏎ Volver al panel</a> · <a href="/schedule">Ver horario</a></p>
+  </div>
+  </body></html>`);
+});
+
+// Guardar Excel y aplicar
+app.post('/excel', upload.single('archivo'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).send('No recibí archivo.');
+    fs.mkdirSync(path.dirname(EXCEL_PATH), { recursive: true });
+    fs.writeFileSync(EXCEL_PATH, req.file.buffer);
+    console.log(`[Excel] Guardado en ${EXCEL_PATH} (${req.file.size} bytes)`);
+
+    // Recargar mapa (para la vista /schedule)
+    loadSchedule();
+
+    // Si NO hay watcher, reiniciar bot para reprogramar cron jobs
+    const watcherOn = String(process.env.SCHEDULE_WATCH ?? '0') !== '0';
+    if (!watcherOn) {
+      try {
+        await restartBot();
+        console.log('[Excel] Bot reiniciado para aplicar el nuevo horario.');
+      } catch (e) {
+        console.warn('[Excel] No pude reiniciar el bot automáticamente:', e?.message || e);
+      }
+    }
+
+    res.redirect('/schedule');
+  } catch (e) {
+    console.error('[/excel POST] error:', e);
+    res.status(500).send('No se pudo subir el Excel.');
+  }
 });
 
 // ----------------------------------------
@@ -259,9 +334,7 @@ app.post('/reload-schedule', (req, res) => {
 app.post('/api/update-name', (req, res) => {
   try {
     const { chat_id, name } = req.body || {};
-    if (!chat_id) {
-      return res.status(400).json({ success: false, error: 'chat_id requerido' });
-    }
+    if (!chat_id) return res.status(400).json({ success: false, error: 'chat_id requerido' });
     db.prepare('UPDATE users SET name = ? WHERE chat_id = ?').run(name ?? null, chat_id);
     res.json({ success: true });
   } catch (e) {
