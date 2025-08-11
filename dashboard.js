@@ -5,6 +5,7 @@ import fs from 'fs';
 import Database from 'better-sqlite3';
 import { loadSchedule, scheduleMap } from './src/utils/schedule.js';
 import { fileURLToPath } from 'url';
+import QRCode from 'qrcode'; // ⬅️ nuevo
 
 // Helpers de configuración
 import {
@@ -26,14 +27,14 @@ const __dirname  = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// === NUEVO: usar el mismo DB_PATH del bot (con fallback a ./data/bot-data.db)
+// === usar el mismo DB_PATH del bot (con fallback a ./data/bot-data.db)
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
 const DB_PATH  = process.env.DB_PATH  || path.join(DATA_DIR, 'bot-data.db');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const db = new Database(DB_PATH);
 
-// === NUEVO: bootstrap de tablas mínimas (mismo esquema que bot.js)
+// === bootstrap de tablas mínimas (mismo esquema que bot.js)
 db.exec(`
   CREATE TABLE IF NOT EXISTS paused_chats ( chat_id TEXT PRIMARY KEY );
   CREATE TABLE IF NOT EXISTS responded_chats (
@@ -108,6 +109,44 @@ app.get('/', (req, res) => res.render('index'));
 app.get('/bot-config', (req, res) => res.render('bot-config'));
 app.get('/responded', (req, res) => res.render('responded'));
 app.get('/schedule', (req, res) => res.render('schedule', { scheduleMap }));
+
+// ----------------------------------------
+// 1.1) QR del bot (png y página)
+// ----------------------------------------
+app.get('/qr.png', async (req, res) => {
+  try {
+    const st = getBotStatus();         // botManager debe exponer { needsQR, qr, ... }
+    if (!st?.needsQR || !st?.qr) {
+      return res.status(404).send('No hay QR pendiente.');
+    }
+    const buf = await QRCode.toBuffer(st.qr, { width: 512, margin: 1 });
+    res.setHeader('Content-Type', 'image/png');
+    res.send(buf);
+  } catch (e) {
+    console.error('[/qr.png] error:', e);
+    res.status(500).send('Error generando QR');
+  }
+});
+
+app.get('/qr', (req, res) => {
+  const st = getBotStatus();
+  if (!st?.needsQR || !st?.qr) {
+    return res
+      .status(200)
+      .send('<html><body style="font-family:sans-serif;padding:24px">No hay QR pendiente. Si el bot necesita autenticación, vuelve a cargar esta página.<br/><a href="/">Volver</a></body></html>');
+  }
+  res.send(`
+    <html>
+      <head><meta name="viewport" content="width=device-width,initial-scale=1"/></head>
+      <body style="background:#111;color:#eee;display:flex;align-items:center;justify-content:center;min-height:100vh;">
+        <div style="text-align:center">
+          <img src="/qr.png" alt="QR" style="max-width:90vw;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.5)" />
+          <div style="margin-top:12px;opacity:.8">Escanéalo con WhatsApp &rarr; Dispositivos vinculados</div>
+        </div>
+      </body>
+    </html>
+  `);
+});
 
 // ----------------------------------------
 // 2) API Responded Data (con filtros/paginación)
@@ -349,6 +388,6 @@ app.use((req, res) => res.status(404).send('Ruta no encontrada'));
 // ----------------------------------------
 // Levantar servidor
 // ----------------------------------------
-app.listen(PORT, () => {
-  console.log(`📊 Dashboard corriendo en http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`📊 Dashboard escuchando en :${PORT}`);
 });
