@@ -464,50 +464,65 @@ client.on('message', async msg => {
     const fromMe = !!msg.fromMe;
 
     // =======  Handoff: comandos escritos por TI (desde el número del bot)  =======
-    if (fromMe) {
-      // /humano (pausa el chat actual)
-      if (text === '/humano') {
-        pauseChat(chatId);
-        await client.sendMessage(chatId, HANDOFF_ON_TEXT);
-        return;
-      }
-      // /bot (reactiva el chat actual)
-      if (text === '/bot') {
-        resumeChat(chatId);
-        await client.sendMessage(chatId, HANDOFF_OFF_TEXT);
-        return;
-      }
-      // /humano <numero>  (pausar por número)
-      let m = text.match(/^\/humano\s+(\S+)$/i);
-      if (m) {
-        const target = toJid(m[1]);
-        if (!target) return replyHuman(msg, 'Formato: /humano <numero>');
-        try {
-          // validar número si es c.us
-          if (target.endsWith('@c.us')) {
-            const id = await client.getNumberId(target.replace('@c.us',''));
-            if (!id) return replyHuman(msg, '❌ Ese número no existe en WhatsApp.');
-          }
-          pauseChat(target);
-          await sendHumanTo(target, HANDOFF_ON_TEXT);
-          return replyHuman(msg, `✅ Handoff activado para ${target}.`);
-        } catch {
-          return replyHuman(msg, '❌ No pude validar ese número.');
-        }
-      }
-      // /bot <numero>  (reactivar por número)
-      m = text.match(/^\/bot\s+(\S+)$/i);
-      if (m) {
-        const target = toJid(m[1]);
-        if (!target) return replyHuman(msg, 'Formato: /bot <numero>');
-        resumeChat(target);
-        await sendHumanTo(target, HANDOFF_OFF_TEXT);
-        return replyHuman(msg, `✅ Bot reactivado para ${target}.`);
-      }
 
-      // Evitar auto-responder a tus propios mensajes (salvo comandos anteriores)
-      return;
+if (fromMe) {
+  // Obtén el ID REAL del chat (cliente o grupo) desde el objeto Chat
+  const chat = await msg.getChat();
+  const targetId = chat?.id?._serialized || msg.to || msg.from; // fallback
+
+  // /humano → pausar SOLO este chat
+  if (text === '/humano') {
+    pauseChat(targetId);
+    console.log('[handoff] pausado', targetId);
+    await sendHumanTo(targetId, HANDOFF_ON_TEXT);
+    return;
+  }
+
+  // /bot → reactivar SOLO este chat
+  if (text === '/bot') {
+    resumeChat(targetId);
+    console.log('[handoff] reactivado', targetId);
+    await sendHumanTo(targetId, HANDOFF_OFF_TEXT);
+    return;
+  }
+
+  // /humano <numero>
+  let m = text.match(/^\/humano\s+(\S+)$/i);
+  if (m) {
+    const target = toJid(m[1]);
+    if (!target) return replyHuman(msg, 'Formato: /humano <numero>');
+    try {
+      if (target.endsWith('@c.us')) {
+        const id = await client.getNumberId(target.replace('@c.us',''));
+        if (!id) return replyHuman(msg, '❌ Ese número no existe en WhatsApp.');
+      }
+      pauseChat(target);
+      console.log('[handoff] pausado (admin)', target);
+      await sendHumanTo(target, HANDOFF_ON_TEXT);
+      return replyHuman(msg, `✅ Handoff activado para ${target}.`);
+    } catch {
+      return replyHuman(msg, '❌ No pude validar ese número.');
     }
+  }
+
+  // /bot <numero>
+  m = text.match(/^\/bot\s+(\S+)$/i);
+  if (m) {
+    const target = toJid(m[1]);
+    if (!target) return replyHuman(msg, 'Formato: /bot <numero>');
+    resumeChat(target);
+    console.log('[handoff] reactivado (admin)', target);
+    await sendHumanTo(target, HANDOFF_OFF_TEXT);
+    return replyHuman(msg, `✅ Bot reactivado para ${target}.`);
+  }
+
+  return; // no auto-responder a tus propios mensajes
+}
+
+
+
+
+
 
     // Utilidad: devolver WAID cuando te escriben "id" o "/id"
     if (text === 'id' || text === '/id') {
