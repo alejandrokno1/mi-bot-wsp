@@ -428,10 +428,10 @@ function matchesStatusQuery(raw) {
 
 ////////////////////////////////////////////////////////////////////////////////
 // 🧩 HANDOFF (modo humano por chat)
-//  - /humano  → pausa SOLO el chat actual (si lo escribes tú, msg.fromMe)
-//  - /bot     → reactiva SOLO el chat actual (si lo escribes tú, msg.fromMe)
-//  - /humano <numero>  → pausa ese número (solo si lo escribes tú)
-//  - /bot <numero>     → reactiva ese número (solo si lo escribes tú)
+//  - /humano  → pausa SOLO el chat actual (aunque lo envíes desde tu teléfono)
+//  - /bot     → reactiva SOLO el chat actual
+//  - /humano <numero>  → pausa ese número (admin)
+//  - /bot <numero>     → reactiva ese número (admin)
 ////////////////////////////////////////////////////////////////////////////////
 const HANDOFF_ON_TEXT  = '👤 Te atiende un humano. El bot quedó en silencio en esta conversación.';
 const HANDOFF_OFF_TEXT = '🤖 Bot reactivado en este chat.';
@@ -453,76 +453,90 @@ function toJid(raw) {
   return `${digits}@c.us`;
 }
 
+// Para evitar doble-procesar comandos propios en distintos eventos
+const processedSelfCmds = new Set();
+function wasProcessed(msg) {
+  const key = msg.id?._serialized || `${msg.timestamp}:${msg.body}`;
+  if (processedSelfCmds.has(key)) return true;
+  processedSelfCmds.add(key);
+  setTimeout(() => processedSelfCmds.delete(key), 300000);
+  return false;
+}
+
+async function handleSelfHandoff(msg) {
+  const text = (msg.body || '').trim().toLowerCase();
+  if (!/^\/(humano|bot)\b/.test(text)) return false;
+
+  const chat = await msg.getChat();
+  const convId = chat?.id?._serialized || msg.to || msg.from;
+
+  if (text === '/humano') {
+    pauseChat(convId);
+    console.log('[handoff] pausado', convId);
+    await sendHumanTo(convId, HANDOFF_ON_TEXT);
+    return true;
+  }
+  if (text === '/bot') {
+    resumeChat(convId);
+    console.log('[handoff] reactivado', convId);
+    await sendHumanTo(convId, HANDOFF_OFF_TEXT);
+    return true;
+  }
+
+  let m = text.match(/^\/humano\s+(\S+)$/i);
+  if (m) {
+    const target = toJid(m[1]);
+    if (!target) { await replyHuman(msg, 'Formato: /humano <numero>'); return true; }
+    try {
+      if (target.endsWith('@c.us')) {
+        const id = await client.getNumberId(target.replace('@c.us',''));
+        if (!id) { await replyHuman(msg, '❌ Ese número no existe en WhatsApp.'); return true; }
+      }
+      pauseChat(target);
+      console.log('[handoff] pausado (admin)', target);
+      await sendHumanTo(target, HANDOFF_ON_TEXT);
+      await replyHuman(msg, `✅ Handoff activado para ${target}.`);
+    } catch {
+      await replyHuman(msg, '❌ No pude validar ese número.');
+    }
+    return true;
+  }
+
+  m = text.match(/^\/bot\s+(\S+)$/i);
+  if (m) {
+    const target = toJid(m[1]);
+    if (!target) { await replyHuman(msg, 'Formato: /bot <numero>'); return true; }
+    resumeChat(target);
+    console.log('[handoff] reactivado (admin)', target);
+    await sendHumanTo(target, HANDOFF_OFF_TEXT);
+    await replyHuman(msg, `✅ Bot reactivado para ${target}.`);
+    return true;
+  }
+
+  return false;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // 4️⃣  Manejador de mensajes
 ////////////////////////////////////////////////////////////////////////////////
 client.on('message', async msg => {
   try {
-    const chatId = msg.from;
+    const chat = await msg.getChat();
+    const convId = chat?.id?._serialized;
     const raw    = (msg.body || '').trim();
     const text   = raw.toLowerCase();
-    const fromMe = !!msg.fromMe;
 
-    // =======  Handoff: comandos escritos por TI (desde el número del bot)  =======
+    // Consideramos "mensaje mío" si:
+    // - msg.fromMe   (lo envió esta sesión)
+    // - o el remitente es mi propio WID (lo enviaste desde tu teléfono)
+    const myWid = client.info?.wid?._serialized;
+    const isSelf = !!msg.fromMe || msg.from === myWid || msg.author === myWid;
 
-if (fromMe) {
-  // Obtén el ID REAL del chat (cliente o grupo) desde el objeto Chat
-  const chat = await msg.getChat();
-  const targetId = chat?.id?._serialized || msg.to || msg.from; // fallback
-
-  // /humano → pausar SOLO este chat
-  if (text === '/humano') {
-    pauseChat(targetId);
-    console.log('[handoff] pausado', targetId);
-    await sendHumanTo(targetId, HANDOFF_ON_TEXT);
-    return;
-  }
-
-  // /bot → reactivar SOLO este chat
-  if (text === '/bot') {
-    resumeChat(targetId);
-    console.log('[handoff] reactivado', targetId);
-    await sendHumanTo(targetId, HANDOFF_OFF_TEXT);
-    return;
-  }
-
-  // /humano <numero>
-  let m = text.match(/^\/humano\s+(\S+)$/i);
-  if (m) {
-    const target = toJid(m[1]);
-    if (!target) return replyHuman(msg, 'Formato: /humano <numero>');
-    try {
-      if (target.endsWith('@c.us')) {
-        const id = await client.getNumberId(target.replace('@c.us',''));
-        if (!id) return replyHuman(msg, '❌ Ese número no existe en WhatsApp.');
-      }
-      pauseChat(target);
-      console.log('[handoff] pausado (admin)', target);
-      await sendHumanTo(target, HANDOFF_ON_TEXT);
-      return replyHuman(msg, `✅ Handoff activado para ${target}.`);
-    } catch {
-      return replyHuman(msg, '❌ No pude validar ese número.');
+    // Handoff si el mensaje es tuyo
+    if (isSelf && !wasProcessed(msg)) {
+      const handled = await handleSelfHandoff(msg);
+      if (handled) return;
     }
-  }
-
-  // /bot <numero>
-  m = text.match(/^\/bot\s+(\S+)$/i);
-  if (m) {
-    const target = toJid(m[1]);
-    if (!target) return replyHuman(msg, 'Formato: /bot <numero>');
-    resumeChat(target);
-    console.log('[handoff] reactivado (admin)', target);
-    await sendHumanTo(target, HANDOFF_OFF_TEXT);
-    return replyHuman(msg, `✅ Bot reactivado para ${target}.`);
-  }
-
-  return; // no auto-responder a tus propios mensajes
-}
-
-
-
-
-
 
     // Utilidad: devolver WAID cuando te escriben "id" o "/id"
     if (text === 'id' || text === '/id') {
@@ -530,8 +544,8 @@ if (fromMe) {
       return;
     }
 
-    // ===============  A. COMANDOS ADMIN (no-fromMe)  ===============
-    if (isAdminSender(msg) && text.startsWith('/')) {
+    // ===============  A. COMANDOS ADMIN (no-self)  ===============
+    if (!isSelf && isAdminSender(msg) && text.startsWith('/')) {
       // 1) Aviso masivo libre: /aviso <mensaje>
       if (/^\/aviso\b/i.test(text)) {
         const payload = raw.replace(/^\/aviso\s*/i, '').trim();
@@ -571,12 +585,12 @@ if (fromMe) {
     }
 
     // Ignorar grupos y chats pausados (pero SOLO para mensajes de usuarios)
-    if (msg.from.endsWith('@g.us')) return;
-    if (pausedChats.has(chatId)) return;
+    if (chat?.isGroup) return;
+    if (pausedChats.has(convId)) return;
 
     // Opt-out
     if (/^\s*(stop|baja|parar|cancelar|no\s+molestar|no\s+enviar|no\s+(?:mas|más))\s*$/i.test(text)) {
-      pauseChat(chatId);
+      pauseChat(convId);
       await replyHuman(msg, 'Entendido ✅ No te escribiré más por este canal. Si deseas reactivar, responde con */bot*.');
       return;
     }
@@ -591,36 +605,36 @@ if (fromMe) {
     const tz = settings.bot_tz || 'America/Bogota';
 
     if (softEnabled) {
-      const isAdmin = ADMIN && chatId === ADMIN;
-      if (!isAdmin) {
+      const isAdminChat = ADMIN && convId === ADMIN;
+      if (!isAdminChat) {
         const now = getNowInTZ(tz);
         const within = isWithinWorkingHours(now.dow, now.hour, now.minute, windows);
         if (!within) {
           const reply = settings.bot_soft_off_reply
             || 'Estamos fuera de horario. Te respondemos en nuestro horario de atención.';
           await replyHuman(msg, reply);
-          recordResponse(chatId);
+          recordResponse(convId);
           return;
         }
       }
     }
 
     // Leer userRow
-    let userRow = db.prepare('SELECT name, group_pref FROM users WHERE chat_id = ?').get(chatId);
+    let userRow = db.prepare('SELECT name, group_pref FROM users WHERE chat_id = ?').get(convId);
 
     // ───────── Confirmación pendiente de pago (SI/NO) ─────────
-    const pendPay = pendingPaymentConfirm.get(chatId);
+    const pendPay = pendingPaymentConfirm.get(convId);
     if (pendPay) {
       if (/^\s*(si|sí|s|es|correcto)\s*$/i.test(text)) {
         clearTimeout(pendPay);
-        pendingPaymentConfirm.delete(chatId);
+        pendingPaymentConfirm.delete(convId);
         await replyHuman(msg, paymentRedirectMessage());
-        recordResponse(chatId);
+        recordResponse(convId);
         return;
       }
       if (/^\s*(no|n|negativo)\s*$/i.test(text)) {
         clearTimeout(pendPay);
-        pendingPaymentConfirm.delete(chatId);
+        pendingPaymentConfirm.delete(convId);
       } else {
         await replyHuman(msg, '¿Es el comprobante de pago de la mensualidad? Responde *SI* o *NO*.');
         return;
@@ -635,27 +649,27 @@ if (fromMe) {
     });
     if (decision === 'auto') {
       await replyHuman(msg, paymentRedirectMessage());
-      recordResponse(chatId);
+      recordResponse(convId);
       return;
     }
     if (decision === 'ask') {
       await replyHuman(msg, '¿Es el comprobante de pago de la mensualidad? Responde *SI* o *NO*.');
-      const tId = setTimeout(() => pendingPaymentConfirm.delete(chatId), 120000);
-      pendingPaymentConfirm.set(chatId, tId);
+      const tId = setTimeout(() => pendingPaymentConfirm.delete(convId), 120000);
+      pendingPaymentConfirm.set(convId, tId);
       return;
     }
 
     // ───────── Manejo de elección pendiente A/B (horario) ─────────
-    const pend = pendingScheduleChoice.get(chatId);
+    const pend = pendingScheduleChoice.get(convId);
     if (pend) {
       const g = detectGroupFromText(text) || (/^[ab]$/i.test(text.trim()) ? text.trim().toUpperCase() : null);
       if (g === 'A' || g === 'B') {
         clearTimeout(pend.timer);
-        pendingScheduleChoice.delete(chatId);
-        db.prepare('UPDATE users SET group_pref = ? WHERE chat_id = ?').run(g, chatId);
+        pendingScheduleChoice.delete(convId);
+        db.prepare('UPDATE users SET group_pref = ? WHERE chat_id = ?').run(g, convId);
         userRow = userRow ? { ...userRow, group_pref: g } : { name: null, group_pref: g };
         await replyHuman(msg, buildScheduleMessage(pend.hint, g));
-        recordResponse(chatId);
+        recordResponse(convId);
         return;
       } else {
         await replyHuman(msg, '¿De qué grupo necesitas el horario? *A* o *B* (responde solo A o B)');
@@ -666,50 +680,30 @@ if (fromMe) {
     // ===============  B. INTENCIONES RÁPIDAS (antes de IA)  ===============
     if (matchesStatusQuery(raw)) {
       await replyHuman(msg, getPlatformStatusMessage());
-      recordResponse(chatId);
+      recordResponse(convId);
       return;
     }
 
     // Número de profesor
     if (KEYWORDS.numeroProfe.some(rx => rx.test(raw))) {
-      awaitingProf.set(chatId, true);
+      awaitingProf.set(convId, true);
       await replyHuman(msg, ASK_WHICH_PROF);
-      recordResponse(chatId);
+      recordResponse(convId);
       return;
     }
-    if (awaitingProf.get(chatId)) {
-      awaitingProf.delete(chatId);
+    if (awaitingProf.get(convId)) {
+      awaitingProf.delete(convId);
       await replyHuman(msg, formatProfNumberResponse(text));
-      recordResponse(chatId);
+      recordResponse(convId);
       return;
     }
 
     // Grabaciones / En vivo / Zoom error / Pagos / Matrícula
-    if (KEYWORDS.grabadas.some(rx => rx.test(raw))) {
-      await replyHuman(msg, QUICK.q10Rec);
-      recordResponse(chatId);
-      return;
-    }
-    if (KEYWORDS.vivo.some(rx => rx.test(raw))) {
-      await replyHuman(msg, QUICK.q10Live);
-      recordResponse(chatId);
-      return;
-    }
-    if (KEYWORDS.zoomError.some(rx => rx.test(raw))) {
-      await replyHuman(msg, QUICK.zoomFix);
-      recordResponse(chatId);
-      return;
-    }
-    if (KEYWORDS.pagos.some(rx => rx.test(raw))) {
-      await replyHuman(msg, PAYMENT_INFO);
-      recordResponse(chatId);
-      return;
-    }
-    if (KEYWORDS.matricula.some(rx => rx.test(raw))) {
-      await replyHuman(msg, MATRICULATION_RESPONSE);
-      recordResponse(chatId);
-      return;
-    }
+    if (KEYWORDS.grabadas.some(rx => rx.test(raw))) { await replyHuman(msg, QUICK.q10Rec);  recordResponse(convId); return; }
+    if (KEYWORDS.vivo.some(rx => rx.test(raw)))     { await replyHuman(msg, QUICK.q10Live); recordResponse(convId); return; }
+    if (KEYWORDS.zoomError.some(rx => rx.test(raw))){ await replyHuman(msg, QUICK.zoomFix); recordResponse(convId); return; }
+    if (KEYWORDS.pagos.some(rx => rx.test(raw)))    { await replyHuman(msg, PAYMENT_INFO);  recordResponse(convId); return; }
+    if (KEYWORDS.matricula.some(rx => rx.test(raw))){ await replyHuman(msg, MATRICULATION_RESPONSE); recordResponse(convId); return; }
 
     // ───── Clasificación (horario / groserías / crisis) ─────
     const cat = classify(raw);
@@ -719,20 +713,20 @@ if (fromMe) {
       const g = detectGroupFromText(text);
       if (g === 'A' || g === 'B') {
         await replyHuman(msg, buildScheduleMessage(msg.body, g));
-        recordResponse(chatId);
+        recordResponse(convId);
         return;
       }
       if (userRow?.group_pref === 'A' || userRow?.group_pref === 'B') {
         await replyHuman(msg, buildScheduleMessage(msg.body, userRow.group_pref));
-        recordResponse(chatId);
+        recordResponse(convId);
         return;
       }
       const timer = setTimeout(() => {
-        pendingScheduleChoice.delete(chatId);
+        pendingScheduleChoice.delete(convId);
       }, 150000);
-      pendingScheduleChoice.set(chatId, { hint: msg.body, timer });
+      pendingScheduleChoice.set(convId, { hint: msg.body, timer });
       await replyHuman(msg, '¿Quieres el *horario del Grupo A* o del *Grupo B*? (responde A o B)');
-      recordResponse(chatId);
+      recordResponse(convId);
       return;
     }
 
@@ -748,7 +742,7 @@ if (fromMe) {
           `⚠️ *Escalado ${cat}*\nDe: ${msg.from}\nMensaje: "${raw}"`
         );
       }
-      recordResponse(chatId);
+      recordResponse(convId);
       return;
     }
 
@@ -762,38 +756,38 @@ if (fromMe) {
     if (!userRow) {
       if (/^(hola|buenos dias|buenas tardes|buenas noches)[!?¡\s]*$/i.test(text)) {
         await replyHuman(msg, '¡Hola! Un gusto conocerte, ¿cómo te llamas? 😊');
-        db.prepare('INSERT INTO users(chat_id) VALUES (?)').run(chatId);
+        db.prepare('INSERT INTO users(chat_id) VALUES (?)').run(convId);
         userRow = { name: null, group_pref: null };
         return;
       }
     } else if (userRow.name == null) {
       const name = raw.split('\n')[0].trim();
-      db.prepare('UPDATE users SET name = ? WHERE chat_id = ?').run(name, chatId);
+      db.prepare('UPDATE users SET name = ? WHERE chat_id = ?').run(name, convId);
       userRow = { ...userRow, name };
       await replyHuman(msg, `¡Encantado de conocerte, ${name}! ¿En qué te puedo ayudar? 😊`);
-      recordResponse(chatId);
+      recordResponse(convId);
       return;
     }
 
     // Tutorial / info del curso
     const isTrainingQuery = /(capacita|inscrip|cupos|matricul|precio|valor|inicio|temario|clases|horario)/i.test(text);
-    const asked = !!db.prepare('SELECT 1 FROM tutorial_asked WHERE chat_id = ?').get(chatId);
-    const done  = !!db.prepare('SELECT 1 FROM tutorial_done  WHERE chat_id = ?').get(chatId);
+    const asked = !!db.prepare('SELECT 1 FROM tutorial_asked WHERE chat_id = ?').get(convId);
+    const done  = !!db.prepare('SELECT 1 FROM tutorial_done  WHERE chat_id = ?').get(convId);
 
     if (isTrainingQuery && !asked) {
       await replyHuman(msg, 'Antes de darte esa información, ¿conoces cómo funciona la capacitación? 🤔');
-      db.prepare('INSERT INTO tutorial_asked(chat_id) VALUES (?)').run(chatId);
+      db.prepare('INSERT INTO tutorial_asked(chat_id) VALUES (?)').run(convId);
       return;
     }
     if (asked && !done) {
       if (/^s[ií]/i.test(text)) {
-        db.prepare('INSERT INTO tutorial_done(chat_id) VALUES (?)').run(chatId);
+        db.prepare('INSERT INTO tutorial_done(chat_id) VALUES (?)').run(convId);
       } else {
         await replyHuman(msg,
           'Este video resume la capacitación. 🎥\n' +
           'https://www.youtube.com/watch?v=xujKKee_meI&ab_channel=NASLYSOFIABELTRANSANCHEZ\n' +
           'Míralo y me dices si te quedan dudas.');
-        db.prepare('INSERT INTO tutorial_done(chat_id) VALUES (?)').run(chatId);
+        db.prepare('INSERT INTO tutorial_done(chat_id) VALUES (?)').run(convId);
         return;
       }
     }
@@ -804,12 +798,12 @@ if (fromMe) {
       if (/^(hola|buenos dias|buenas tardes|buenas noches)$/i.test(text)) {
         const saludo = raw.charAt(0).toUpperCase() + raw.slice(1);
         await replyHuman(msg, `${saludo}! ¿En qué te puedo ayudar? 😊`);
-        recordResponse(chatId);
+        recordResponse(convId);
         return;
       }
       if (/^(gracias|ok|vale|listo)$/i.test(text)) {
         await replyHuman(msg, '¡Genial! ¿Hay algo más en lo que pueda ayudarte?');
-        recordResponse(chatId);
+        recordResponse(convId);
         return;
       }
     }
@@ -817,14 +811,14 @@ if (fromMe) {
     // Comprobante / matrícula
     if (/comprobante/i.test(text) && /matricul/i.test(text)) {
       await replyHuman(msg, MATRICULATION_RESPONSE);
-      recordResponse(chatId);
+      recordResponse(convId);
       return;
     }
 
     // Medios de pago (info de cuentas)
     if (/(cuentas?|medios de pago|transferencia)/i.test(text)) {
       await replyHuman(msg, PAYMENT_INFO);
-      recordResponse(chatId);
+      recordResponse(convId);
       return;
     }
 
@@ -850,8 +844,8 @@ if (fromMe) {
 
     // ================= IA (few-shot) =================
     const userText = (msg.body || '').trim();
-    if (!history.has(chatId)) history.set(chatId, [ BASE_SYSTEM_PROMPT ]);
-    const convo = history.get(chatId);
+    if (!history.has(convId)) history.set(convId, [ BASE_SYSTEM_PROMPT ]);
+    const convo = history.get(convId);
     convo.push({ role: 'user', content: userText });
 
     const fewShot = EXAMPLES.flatMap(ex => [
@@ -867,7 +861,7 @@ if (fromMe) {
       });
       let reply = choices[0].message.content.trim();
       await replyHuman(msg, reply);
-      recordResponse(chatId);
+      recordResponse(convId);
     } catch (e) {
       console.error('OpenAI error:', e?.message || e);
       await replyHuman(msg, 'Lo siento, ocurrió un error procesando tu mensaje.');
