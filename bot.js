@@ -94,7 +94,7 @@ db.exec(`
     ok         INTEGER,
     error      TEXT
   );
-  CREATE TABLE IF NOT EXISTS settings (  -- clave-valor simple (string/JSON)
+  CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT
   );
@@ -227,10 +227,7 @@ async function broadcastToGroups(text, opts = {}) {
 ////////////////////////////////////////////////////////////////////////////////
 // 1️⃣  Cliente WhatsApp & OpenAI
 ////////////////////////////////////////////////////////////////////////////////
-// En Railway define PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium.
-// En local NO la definas para usar Chromium/Chrome de Puppeteer.
 const PUPPETEER_EXEC = process.env.PUPPETEER_EXECUTABLE_PATH;
-
 const puppeteerOpts = {
   headless: true,
   args: [
@@ -241,9 +238,7 @@ const puppeteerOpts = {
     '--no-zygote'
   ]
 };
-if (PUPPETEER_EXEC) {
-  puppeteerOpts.executablePath = PUPPETEER_EXEC;
-}
+if (PUPPETEER_EXEC) puppeteerOpts.executablePath = PUPPETEER_EXEC;
 
 const client = new Client({
   authStrategy: new LocalAuth({
@@ -274,8 +269,6 @@ const awaitingProf = new Map(); // chatId -> true
 function report(type, data = {}) {
   try { if (process.send) process.send({ type, data }); } catch {}
 }
-
-// Escuchar órdenes del orquestador (dashboard)
 process.on('message', async (m) => {
   if (!m || typeof m !== 'object') return;
   if (m.type === 'logout') {
@@ -285,24 +278,19 @@ process.on('message', async (m) => {
     try { if (process.send) process.send({ type:'logout_ok' }); } catch {}
   }
 });
-
-// Reporte inicial de arranque
 report('status', { started: true, connected: false, ready: false, needsQR: false });
 
 ////////////////////////////////////////////////////////////////////////////////
 // 2️⃣  Eventos de sesión (QR / auth / ready / desconexión)
 ////////////////////////////////////////////////////////////////////////////////
 client.on('qr', async (qr) => {
-  // ASCII para local (sigue sirviendo):
   qrcode.generate(qr, { small: true });
-  // PNG para Railway (/qr):
   try {
     lastQR = await QRCode.toDataURL(qr, { margin: 1, scale: 8 });
     console.log('🔗 Escanea el QR abriendo la ruta /qr de tu app.');
   } catch (e) {
     console.warn('QR PNG error:', e?.message || e);
   }
-
   console.log('🔑 QR recibido.');
   report('qr', qr);
   report('status', { needsQR: true, connected: false, ready: false });
@@ -314,7 +302,7 @@ client.on('authenticated', () => {
 });
 
 client.on('ready', () => {
-  lastQR = null; // deja de mostrar /qr cuando ya está listo
+  lastQR = null;
   console.log('Mi WAID:', client.info?.wid?._serialized);
   console.log('💚 WhatsApp Web listo');
   report('ready');
@@ -371,14 +359,12 @@ function processSendQueue() {
       processSendQueue();
     });
 }
-
 function enqueueSend(fn) {
   return new Promise((resolve, reject) => {
     sendQueue.push({ fn, resolve, reject });
     processSendQueue();
   });
 }
-
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 function typingDelayFor(text = '') {
@@ -386,7 +372,6 @@ function typingDelayFor(text = '') {
   const perChar = Math.min(2000, text.length * 15);
   return base + perChar;
 }
-
 async function replyHuman(msg, text) {
   return enqueueSend(async () => {
     try {
@@ -401,7 +386,6 @@ async function replyHuman(msg, text) {
     }
   });
 }
-
 async function sendHumanTo(chatId, text, opts = {}) {
   return enqueueSend(async () => {
     try {
@@ -443,15 +427,87 @@ function matchesStatusQuery(raw) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// 🧩 HANDOFF (modo humano por chat)
+//  - /humano  → pausa SOLO el chat actual (si lo escribes tú, msg.fromMe)
+//  - /bot     → reactiva SOLO el chat actual (si lo escribes tú, msg.fromMe)
+//  - /humano <numero>  → pausa ese número (solo si lo escribes tú)
+//  - /bot <numero>     → reactiva ese número (solo si lo escribes tú)
+////////////////////////////////////////////////////////////////////////////////
+const HANDOFF_ON_TEXT  = '👤 Te atiende un humano. El bot quedó en silencio en esta conversación.';
+const HANDOFF_OFF_TEXT = '🤖 Bot reactivado en este chat.';
+
+function pauseChat(chatId) {
+  pausedChats.add(chatId);
+  db.prepare('INSERT OR IGNORE INTO paused_chats(chat_id) VALUES (?)').run(chatId);
+}
+function resumeChat(chatId) {
+  pausedChats.delete(chatId);
+  db.prepare('DELETE FROM paused_chats WHERE chat_id = ?').run(chatId);
+}
+function toJid(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  if (s.endsWith('@c.us') || s.endsWith('@g.us')) return s;
+  const digits = s.replace(/\D/g, '');
+  if (!digits) return null;
+  return `${digits}@c.us`;
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // 4️⃣  Manejador de mensajes
 ////////////////////////////////////////////////////////////////////////////////
 client.on('message', async msg => {
   try {
-    if (msg.fromMe) return;
-
     const chatId = msg.from;
     const raw    = (msg.body || '').trim();
     const text   = raw.toLowerCase();
+    const fromMe = !!msg.fromMe;
+
+    // =======  Handoff: comandos escritos por TI (desde el número del bot)  =======
+    if (fromMe) {
+      // /humano (pausa el chat actual)
+      if (text === '/humano') {
+        pauseChat(chatId);
+        await client.sendMessage(chatId, HANDOFF_ON_TEXT);
+        return;
+      }
+      // /bot (reactiva el chat actual)
+      if (text === '/bot') {
+        resumeChat(chatId);
+        await client.sendMessage(chatId, HANDOFF_OFF_TEXT);
+        return;
+      }
+      // /humano <numero>  (pausar por número)
+      let m = text.match(/^\/humano\s+(\S+)$/i);
+      if (m) {
+        const target = toJid(m[1]);
+        if (!target) return replyHuman(msg, 'Formato: /humano <numero>');
+        try {
+          // validar número si es c.us
+          if (target.endsWith('@c.us')) {
+            const id = await client.getNumberId(target.replace('@c.us',''));
+            if (!id) return replyHuman(msg, '❌ Ese número no existe en WhatsApp.');
+          }
+          pauseChat(target);
+          await sendHumanTo(target, HANDOFF_ON_TEXT);
+          return replyHuman(msg, `✅ Handoff activado para ${target}.`);
+        } catch {
+          return replyHuman(msg, '❌ No pude validar ese número.');
+        }
+      }
+      // /bot <numero>  (reactivar por número)
+      m = text.match(/^\/bot\s+(\S+)$/i);
+      if (m) {
+        const target = toJid(m[1]);
+        if (!target) return replyHuman(msg, 'Formato: /bot <numero>');
+        resumeChat(target);
+        await sendHumanTo(target, HANDOFF_OFF_TEXT);
+        return replyHuman(msg, `✅ Bot reactivado para ${target}.`);
+      }
+
+      // Evitar auto-responder a tus propios mensajes (salvo comandos anteriores)
+      return;
+    }
 
     // Utilidad: devolver WAID cuando te escriben "id" o "/id"
     if (text === 'id' || text === '/id') {
@@ -459,9 +515,8 @@ client.on('message', async msg => {
       return;
     }
 
-    // ===============  A. COMANDOS ADMIN  ===============
+    // ===============  A. COMANDOS ADMIN (no-fromMe)  ===============
     if (isAdminSender(msg) && text.startsWith('/')) {
-
       // 1) Aviso masivo libre: /aviso <mensaje>
       if (/^\/aviso\b/i.test(text)) {
         const payload = raw.replace(/^\/aviso\s*/i, '').trim();
@@ -469,10 +524,7 @@ client.on('message', async msg => {
           await replyHuman(msg, 'Uso: */aviso* <mensaje para enviar a todos los grupos>');
           return;
         }
-        const aviso = [
-          '📢 *Aviso importante*',
-          payload
-        ].join('\n');
+        const aviso = ['📢 *Aviso importante*', payload].join('\n');
         await broadcastToGroups(aviso);
         await replyHuman(msg, '✅ Aviso enviado a los grupos configurados.');
         return;
@@ -481,10 +533,7 @@ client.on('message', async msg => {
       // 2) Comandos de estado (/status, /estado, /q10, /zoom, /plataforma ...)
       const res = applyAdminCommand(raw, true);
       if (res.matched) {
-        if (!/^\/(status|estado)\b/i.test(text)) {
-          saveOutagesToDB();
-        }
-
+        if (!/^\/(status|estado)\b/i.test(text)) saveOutagesToDB();
         await replyHuman(msg, res.reply || '✅ Comando aplicado.');
 
         if (/^\/plataforma presenta inconvenientes/i.test(text) || /^\/q10 down/i.test(text) || /^\/zoom down/i.test(text)) {
@@ -498,7 +547,6 @@ client.on('message', async msg => {
           ].join('\n');
           await broadcastToGroups(aviso);
         }
-
         if (/^\/plataforma funcionando correctamente/i.test(text)) {
           const okMsg = '✅ *Actualización*: Plataforma *operativa*. Q10 y Zoom funcionando correctamente.';
           await broadcastToGroups(okMsg);
@@ -507,25 +555,13 @@ client.on('message', async msg => {
       }
     }
 
-    // Pausar / reanudar IA
-    if (text === '/humano') {
-      pausedChats.add(chatId);
-      db.prepare('INSERT OR IGNORE INTO paused_chats(chat_id) VALUES (?)').run(chatId);
-      return msg.reply('Entendido, paso el turno a un asesor humano. 👋');
-    }
-    if (text === '/bot') {
-      pausedChats.delete(chatId);
-      db.prepare('DELETE FROM paused_chats WHERE chat_id = ?').run(chatId);
-      return msg.reply('Listo, continúo yo. 😊');
-    }
-
-    // Ignorar grupos y chats pausados
-    if (msg.from.endsWith('@g.us') || pausedChats.has(chatId)) return;
+    // Ignorar grupos y chats pausados (pero SOLO para mensajes de usuarios)
+    if (msg.from.endsWith('@g.us')) return;
+    if (pausedChats.has(chatId)) return;
 
     // Opt-out
     if (/^\s*(stop|baja|parar|cancelar|no\s+molestar|no\s+enviar|no\s+(?:mas|más))\s*$/i.test(text)) {
-      pausedChats.add(chatId);
-      db.prepare('INSERT OR IGNORE INTO paused_chats(chat_id) VALUES (?)').run(chatId);
+      pauseChat(chatId);
       await replyHuman(msg, 'Entendido ✅ No te escribiré más por este canal. Si deseas reactivar, responde con */bot*.');
       return;
     }
@@ -537,7 +573,6 @@ client.on('message', async msg => {
       settings.bot_soft_enabled === 1 ||
       settings.bot_soft_enabled === '1' ||
       String(settings.bot_soft_enabled).toLowerCase() === 'true';
-
     const tz = settings.bot_tz || 'America/Bogota';
 
     if (softEnabled) {
@@ -742,8 +777,7 @@ client.on('message', async msg => {
         await replyHuman(msg,
           'Este video resume la capacitación. 🎥\n' +
           'https://www.youtube.com/watch?v=xujKKee_meI&ab_channel=NASLYSOFIABELTRANSANCHEZ\n' +
-          'Míralo y me dices si te quedan dudas.'
-        );
+          'Míralo y me dices si te quedan dudas.');
         db.prepare('INSERT INTO tutorial_done(chat_id) VALUES (?)').run(chatId);
         return;
       }
